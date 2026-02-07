@@ -1,4 +1,5 @@
 import numpy as np
+from pyData2C import export_arrays_to_c_header
 
 def print_center_title(title:str, width=60, fill_char="="):
     """
@@ -80,4 +81,31 @@ if __name__=="__main__":
     print("col_indices:",col_indices)
     print("values:", values)
 
-    
+    export_arrays_to_c_header(
+        out_path="sparse_data.h",
+        variables={
+            # scalar
+            "A_rows": rows,
+            "A_cols": cols,
+            "A_nnz":  len(values),
+
+            # COO
+            "A_row_idx": row_indices,
+            "A_col_idx": col_indices,
+            "A_values":  values,
+
+            # dense matrix（debug / golden 用）
+            "A_dense": mat,
+        },
+        array_overrides={
+            # index / value 型別你可以在這裡完全控制
+            "A_row_idx": {"ctype": "int32_t"},
+            "A_col_idx": {"ctype": "int32_t"},
+            "A_values":  {"ctype": "int32_t"},
+            "A_dense":   {"ctype": "int32_t"},
+        },
+        includes=[
+            "<cstdint>",   # 固定寬度整數
+        ],
+        storage="static const",  # header-only，include 即用
+    )
