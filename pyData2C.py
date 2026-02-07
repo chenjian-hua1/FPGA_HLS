@@ -85,6 +85,7 @@ def export_arrays_to_c_header(
     storage: str = "static const",  # "static const" (header-only) 或 "extern const"
     default_int_ctype: str = "int32_t",
     sort_keys: bool = True,
+    as_define: bool = True,
 ) -> Path:
     """
     通用匯出器：把多個 numpy array / list / scalar 匯出成 C/C++ 可 include 的 .h
@@ -164,10 +165,16 @@ def export_arrays_to_c_header(
     # 逐一輸出
     for var_name, arr, ctype in entries:
         if arr.ndim == 0:
-            # scalar
             v = arr.item()
             init = _format_0d_scalar(v)
-            lines.append(f"{storage} {ctype} {var_name} = {init};")
+
+            if as_define:
+                # compile-time macro
+                lines.append(f"#define {var_name} {init}")
+            else:
+                # normal const variable
+                lines.append(f"{storage} {ctype} {var_name} = {init};")
+
             lines.append("")
             continue
 

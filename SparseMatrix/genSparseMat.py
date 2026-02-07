@@ -82,7 +82,7 @@ if __name__=="__main__":
     print("values:", values)
 
     export_arrays_to_c_header(
-        out_path="sparse_data.h",
+        out_path="SparseMatrix/sparse_data.h",
         variables={
             # scalar
             "A_rows": rows,

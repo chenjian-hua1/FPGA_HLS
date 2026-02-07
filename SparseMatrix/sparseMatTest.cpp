@@ -1,3 +1,4 @@
+#include "sparseMat.h"
 #include <iostream>
 
 int main() {

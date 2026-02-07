@@ -3,24 +3,24 @@
 
 #include <cstdint>
 
-static const int32_t A_col_idx[14] = {0, 1, 2, 4, 1, 2, 0, 1, 0, 4, 0, 1, 2, 3};
+static const int32_t A_col_idx[12] = {3, 4, 1, 3, 1, 2, 3, 3, 4, 0, 3, 4};
 
-static const int64_t A_cols = 5;
+#define A_cols 5
 
 static const int32_t A_dense[5][5] = {
-  {7, 8, 5, 0, 1},
-  {0, 9, 7, 0, 0},
-  {9, 4, 0, 0, 0},
-  {8, 0, 0, 0, 6},
-  {8, 9, 9, 2, 0}
+  {0, 0, 0, 9, 6},
+  {0, 5, 0, 3, 0},
+  {0, 2, 4, 3, 0},
+  {0, 0, 0, 1, 8},
+  {9, 0, 0, 3, 7}
 };
 
-static const int64_t A_nnz = 14;
+#define A_nnz 12
 
-static const int32_t A_row_idx[14] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 4};
+static const int32_t A_row_idx[12] = {0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4};
 
-static const int64_t A_rows = 5;
+#define A_rows 5
 
-static const int32_t A_values[14] = {7, 8, 5, 1, 9, 7, 9, 4, 8, 6, 8, 9, 9, 2};
+static const int32_t A_values[12] = {9, 6, 5, 3, 2, 4, 3, 1, 8, 9, 3, 7};
 
 #endif // SPARSE_DATA_H_
