@@ -38,10 +38,10 @@ def generate_sparse_matrix(rows, cols, density=0.2, value_range=(1, 9), seed=Non
 
     return mask * values
 
-def Mat2COO(mat:np.ndarray) -> tuple[list[int],list[int]]:
+def Mat2COO(mat:np.ndarray) -> tuple[list[int],list[int],list]:
     """ 
     將稀疏矩陣轉成 COO 儲存格式 
-    return row_indices,col_indice
+    return row_indices,col_indice,values
     """
     if (len(mat.shape)!=2):
         print(f"Error : Matrix Shape is 2 dim but get {len(mat.shape)} dim") 
@@ -52,6 +52,8 @@ def Mat2COO(mat:np.ndarray) -> tuple[list[int],list[int]]:
     # 非零資料位置
     row_indices = []
     col_indices = []
+    # 非零資料
+    values = []
 
     for r in range(rows):
         for c in range(cols):
@@ -59,8 +61,9 @@ def Mat2COO(mat:np.ndarray) -> tuple[list[int],list[int]]:
             # else
             row_indices.append(r)
             col_indices.append(c)
+            values.append(mat[r][c])
 
-    return row_indices, col_indices
+    return row_indices, col_indices, values
 
 
 if __name__=="__main__":
@@ -72,7 +75,9 @@ if __name__=="__main__":
 
     ##################### COO Format ############################
     print_center_title("COO Format")
-    row_indices, col_indices = Mat2COO(mat)
-    print(row_indices)
-    print(col_indices)
+    row_indices, col_indices, values = Mat2COO(mat)
+    print("row indices:",row_indices)
+    print("col_indices:",col_indices)
+    print("values:", values)
 
+    
