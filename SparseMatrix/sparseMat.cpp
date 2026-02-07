@@ -44,4 +44,5 @@ void sparseMatGEMM(MatType data_ptr[H*W]) {
 
     // get nonzero data (COO Format)
     _CooDeconstruct<H,W,SPARSE_SIZE>(data, nz_data, row_indices, col_indices);
+    
 };
