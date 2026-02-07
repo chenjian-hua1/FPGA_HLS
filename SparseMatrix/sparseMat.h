@@ -4,10 +4,10 @@
 #include <stdio.h>
 #include "sparse_data.h"
 
-typedef int MatType;
+typedef int32_t MatType;
 
 // MatType GEMM_PARAM[SPARSE_SIZE] = {1, 2, 3, 4, 5, 6, 7};
 
-void sparseMatGEMM(MatType data_ptr[A_rows*A_cols]);
+void coo_gemm(MatType data_ptr[]);
 
 #endif

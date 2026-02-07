@@ -85,9 +85,9 @@ if __name__=="__main__":
         out_path="SparseMatrix/sparse_data.h",
         variables={
             # scalar
-            "A_rows": rows,
-            "A_cols": cols,
-            "A_nnz":  len(values),
+            "A_ROWS": rows,
+            "A_COLS": cols,
+            "A_NNZ":  len(values),
 
             # COO
             "A_row_idx": row_indices,

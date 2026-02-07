@@ -6,13 +6,14 @@
 ==========================================================================================================
 */
 // COO (Coordinate) format : save nonzero row, col indices
-template<int COO_H, int COO_W, int COO_SPARSE_SIZE> // local parameter
-void _CooDeconstruct(
-    const MatType data[COO_H][COO_W], 
-    MatType nz_data[COO_SPARSE_SIZE],
-    const int row_indices[COO_SPARSE_SIZE], const int col_indices[COO_SPARSE_SIZE]
+template<int DATA_ROWS, int DATA_COLS, int SPARSE_MAT_NNZ> // local parameter
+void _coo_gemm(
+    MatType data_ptr[DATA_ROWS*DATA_COLS],
+    const int row_indices[SPARSE_MAT_NNZ], 
+    const int col_indices[SPARSE_MAT_NNZ], // nonzero indices
+    const int values[SPARSE_MAT_NNZ] // nonzero values
 ) {
-#pragma HLS INLINE off
+// #pragma HLS INLINE off
 
     
 };
@@ -23,26 +24,7 @@ void _CooDeconstruct(
 ===================================== Top Module Implement ===============================================
 ==========================================================================================================
 */
-// Sparse Matrix GEMM
-void sparseMatGEMM(MatType data_ptr[H*W]) {
-    // input data
-    MatType data[H][W];
-    // nonzero datas
-    MatType nz_data[SPARSE_SIZE];
-
-    // nonzero data indices
-    int row_indices[SPARSE_SIZE];
-    int col_indices[SPARSE_SIZE];
-
-    load_data: for (int r=0; r<H; r++) {
-    // #pragma HLS UNROLL
-        
-        for (int c=0; c<W; c++) {
-            data[r][c] = data_ptr[r*W+c];
-        }
-    }
-
-    // get nonzero data (COO Format)
-    _CooDeconstruct<H,W,SPARSE_SIZE>(data, nz_data, row_indices, col_indices);
-    
-};
+// COO Format Matrix GEMM
+void coo_gemm(MatType data_ptr[]) {
+    _coo_gemm<A_ROWS,A_COLS,A_NNZ>(data_ptr,A_row_idx,A_col_idx,A_values);
+}
