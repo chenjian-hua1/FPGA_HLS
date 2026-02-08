@@ -32,36 +32,41 @@ void _coo_gemm(
     MatType data[DATA_ROWS][DATA_COLS];
     
     load_data: for (int r=0; r<DATA_ROWS; r++) {
+    #pragma HLS UNROLL
+
         for (int c=0; c<DATA_COLS; c++) {
             data[r][c] = data_ptr[r*DATA_COLS+c];
         }
     }
 
-    // 需要在運作時才能判定什麼到哪個部分 所以平行度很爛
     int row_offset = 0;
     int current_row = 0;
     gemm: for (int i=0; i<SPARSE_MAT_NNZ; i++) {
+    #pragma HLS UNROLL
+
         // 捕捉每個 row 的邊界, nnz 合成對應大小的乘法電路
+        // 感覺已經是 CSR 的概念了！
         if (current_row!=row_indices[i] || i==SPARSE_MAT_NNZ-1) {
-            std::cout << row_indices[i] << std::endl;
-            
+            // std::cout << row_indices[i] << std::endl;
+            // 最後一個 row 的上邊界在最後一個idx
             const int nnz = (i==SPARSE_MAT_NNZ) ? (i+1-row_offset):(i-row_offset);
             
             // Sparse Row 上的非零 col 索引, 數值
-            int row_nnz_cols[nnz];
-            int row_nnz_values[nnz];
-            for (int nnz_idx=0; nnz_idx<nnz; nnz_idx++) {
-                row_nnz_cols[nnz_idx] = A_col_idx[row_offset+nnz_idx];
-                row_nnz_values[nnz_idx] = A_values[row_offset+nnz_idx];
+            int row_nz_cols[nnz];
+            int row_nz_values[nnz];
+            for (int nz_idx=0; nz_idx<nnz; nz_idx++) {
+                row_nz_cols[nz_idx] = A_col_idx[row_offset+nz_idx];
+                row_nz_values[nz_idx] = A_values[row_offset+nz_idx];
             }
 
+            // (1,nnz)mat * (nnz,DATA_COLS)mat
             for (int c=0; c<DATA_COLS; c++) {
                 // 將內積不是對到 0 的部分取出來
                 MatType col_elements[nnz];
-                for (int nnz_idx=0; nnz_idx<nnz; nnz_idx++)
-                    col_elements[nnz_idx] = data[nnz_idx][c];
+                for (int nz_idx=0; nz_idx<nnz; nz_idx++)
+                    col_elements[nz_idx] = data[nz_idx][c];
                 
-                _inner_product(row_nnz_values,col_elements,out[current_row][c],nnz);
+                _inner_product(row_nz_values,col_elements,out[current_row][c],nnz);
             }
 
             row_offset = i;
@@ -86,8 +91,8 @@ void coo_gemm(MatType *data_ptr, MatType *out) {
 }
 
 
-int main() {
-    MatType *data, *out;
-    coo_gemm(data, out);
-    return 0;
-}
+// int main() {
+//     MatType *data, *out;
+//     coo_gemm(data, out);
+//     return 0;
+// }
