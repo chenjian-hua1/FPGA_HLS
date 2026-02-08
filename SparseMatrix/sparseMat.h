@@ -8,6 +8,6 @@ typedef int32_t MatType;
 
 // MatType GEMM_PARAM[SPARSE_SIZE] = {1, 2, 3, 4, 5, 6, 7};
 
-void coo_gemm(MatType data_ptr[]);
+void coo_gemm(MatType *data_ptr, MatType *out);
 
 #endif
