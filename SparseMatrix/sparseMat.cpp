@@ -8,12 +8,12 @@
 */
 // inner product module
 template <int N>
-void _inner_product(MatType *vec1, MatType *vec2, MatType &out) {
+void _inner_product(MatType vec1[N], MatType vec2[N], MatType &out, int nnz=N) {
 //#pragma HLS INLINE
 
     MatType sum = 0;
-    for (int i=0; i<N; i++) {
-    #pragma HLS UNROLL
+    for (int i=0; i<nnz; i++) {
+    #pragma HLS PIPELINE=1
         sum += vec1[i]*vec2[i];
     }
 
@@ -88,15 +88,15 @@ void _csr_gemm(
     csr_gemm: for (int r=0; r<SPARSE_ROWS; r++) {
     #pragma HLS UNROLL
 
-        constexpr int row_start = row_offset[r];
-        constexpr int row_end = row_offset[r+1];
+        const int row_start = row_offset[r];
+        const int row_end = row_offset[r+1];
 
-        constexpr int nnz = row_end-row_start;
-        MatType row_nz_values[nnz];
-        MatType row_nz_col_idx[nnz];
+        // constexpr int nnz = row_end-row_start;
+        MatType row_nz_values[A_row_nnz[r]];
+        MatType row_nz_col_idx[A_row_nnz[r]];
 
         // 抓該 row 的對應範圍的非零 col 索引和數值
-        get_nz_data: for (int nz_idx=0; nz_idx<nnz; nz_idx++) {
+        get_nz_data: for (int nz_idx=0; nz_idx<A_row_nnz[r]; nz_idx++) {
         #pragma HLS UNROLL
             row_nz_values[nz_idx] = values[row_start+nz_idx];
             row_nz_col_idx[nz_idx] = col_indices[row_start+nz_idx];
@@ -104,16 +104,13 @@ void _csr_gemm(
 
         for (int c=0; c<DATA_COLS; c++) {
             // 將內積中不是對到0的部份取出 
-            MatType col_nz_values[nnz];
-            load_col_nz: for (int nz_idx=0; nz_idx<nnz; nz_idx++) {
+            MatType col_nz_values[A_row_nnz[r]];
+            load_col_nz: for (int nz_idx=0; nz_idx<A_row_nnz[r]; nz_idx++) {
             #pragma HLS UNROLL
                 col_nz_values[nz_idx] = data[row_nz_col_idx[nz_idx]][c];
             }
 
-            // 當 row 的部份 UNROLL 時，每個 row 的 nnz 都是獨立固定的
-            // 代表和每個 col 內積的元素量是相等，col 部份可以共用同組內積電路
-            // 如果每個 row 部份想共用同組電路，會遇到 nnz 不同 內積電路大小不同 -> 錯誤
-            _inner_product<nnz>(row_nz_values,col_nz_values,out[r][c]);
+            _inner_product<DATA_ROWS>(row_nz_values,col_nz_values,out[r][c]);
         }
         
     }
@@ -159,9 +156,9 @@ void sparse_gemm(MatType *data_ptr, MatType *out) {
 }
 
 
-//int main() {
-//    MatType *data, out[A_ROWS*A_COLS];
-//    sparse_gemm(data, out);
-//    std::cout << "hello world" << std::endl;
-//    return 0;
-//}
+int main() {
+   MatType *data, out[A_ROWS*A_COLS];
+   sparse_gemm(data, out);
+   std::cout << "hello world" << std::endl;
+   return 0;
+}
