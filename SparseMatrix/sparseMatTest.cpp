@@ -3,7 +3,7 @@
 
 int main() {
     std::cout << "hello world" << std::endl;
-    MatType *data;
-    coo_gemm(data);
+    MatType *data, *out;
+    sparse_gemm(data,out);
     return 0;
 }
