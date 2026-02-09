@@ -66,6 +66,34 @@ def Mat2COO(mat:np.ndarray) -> tuple[list[int],list[int],list]:
 
     return row_indices, col_indices, values
 
+def Mat2CSR(mat: np.ndarray) -> tuple[list[int], list[int], list[int]]:
+    """
+    Dense matrix -> CSR format
+
+    Returns:
+        row_ptr : List[int]  (len = rows + 1) # 每 row 從哪個地方開始，取 row 上的nnz col_idx value \n
+        col_idx : List[int]  (len = nnz) # 全部 row 的 nnz col idx \n
+        values  : List[int]  (len = nnz) \n
+    """
+    rows, cols = mat.shape
+
+    row_ptr: list[int] = [0] * (rows + 1)
+    col_idx: list[int] = []
+    values:  list[int] = []
+
+    nnz = 0
+    for r in range(rows):
+        row_ptr[r] = nnz
+        for c in range(cols):
+            v = mat[r, c]
+            if v != 0:
+                col_idx.append(int(c))
+                values.append(int(v))
+                nnz += 1
+
+    row_ptr[rows] = nnz  # CSR 最後一格一定是 nnz
+
+    return row_ptr, col_idx, values
 
 if __name__=="__main__":
     rows, cols = 5, 5
@@ -81,6 +109,13 @@ if __name__=="__main__":
     print("col_indices:",col_indices)
     print("values:", values)
 
+    #################### CSR Format #############################
+    print_center_title("CSR Format")
+    row_ptr, col_indices, values = Mat2CSR(mat)
+    print("row pointer",row_ptr)
+    print("col_indices",col_indices)
+    print("values", values)
+
     export_arrays_to_c_header(
         out_path="SparseMatrix/sparse_data.h",
         variables={
@@ -94,6 +129,9 @@ if __name__=="__main__":
             "A_col_idx": col_indices,
             "A_values":  values,
 
+            # CSR
+            "A_row_ptr": row_ptr,
+
             # dense matrix（debug / golden 用）
             "A_dense": mat,
         },
@@ -102,6 +140,8 @@ if __name__=="__main__":
             "A_row_idx": {"ctype": "int32_t"},
             "A_col_idx": {"ctype": "int32_t"},
             "A_values":  {"ctype": "int32_t"},
+
+            "A_row_ptr": {"ctype": "int32_t"},
             "A_dense":   {"ctype": "int32_t"},
         },
         includes=[
