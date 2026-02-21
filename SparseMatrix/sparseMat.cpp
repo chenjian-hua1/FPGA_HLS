@@ -33,7 +33,7 @@ void _inner_product(matType vec1[N], matType vec2[N], matType &out) {
 template<int DATA_ROWS, int DATA_COLS> // local parameter
 void _coo_gemm(
     matType data[DATA_ROWS][DATA_COLS],
-    matType out[A_ROWS][DATA_COLS],
+    matType out[SP_H][DATA_COLS],
     const int row_indices,
     const int col_indices, // nonzero indices
     const int values // nonzero values
@@ -108,7 +108,13 @@ void _csr_gemm(
 ==========================================================================================================
 */
 // Sparse Matrix GEMM
-void csr_gemm(matType *data_ptr, elemIdxType *row_offset_ptr, colIdxType *col_indices_ptr, matType *values_ptr, matType *out_ptr) {
+void csr_gemm(
+    matType data_ptr[DATA_H*DATA_W],
+    elemIdxType row_offset_ptr[SP_H+1],
+    colIdxType col_indices_ptr[SP_MAX_NNZ],
+    matType values_ptr[SP_MAX_NNZ],
+    matType out_ptr[SP_H*DATA_W]
+) {
 #pragma HLS INTERFACE m_axi port=data_ptr offset=slave bundle=gmem
 #pragma HLS INTERFACE m_axi port=row_offset_ptr offset=slave bundle=gmem
 #pragma HLS INTERFACE m_axi port=col_indices_ptr offset=slave bundle=gmem
@@ -123,24 +129,24 @@ void csr_gemm(matType *data_ptr, elemIdxType *row_offset_ptr, colIdxType *col_in
 #pragma HLS INTERFACE s_axilite port=out_ptr         bundle=control
 #pragma HLS INTERFACE s_axilite port=return          bundle=control
 
-    matType data[A_COLS][A_ROWS];
+    matType data[SP_W][SP_H];
     #pragma HLS ARRAY_PARTITION variable=data type=complete dim=0
 
-    load_data: for (rowIdxType r=0; r<A_ROWS; r++) {
-        for (colIdxType c=0; c<A_COLS; c++) {
+    load_data: for (rowIdxType r=0; r<SP_H; r++) {
+        for (colIdxType c=0; c<SP_W; c++) {
 		#pragma HLS PIPELINE
-            data[r][c] = data_ptr[r*A_COLS+c];
+            data[r][c] = data_ptr[r*SP_W+c];
         }
     }
 
-    elemIdxType row_offset[A_ROWS+1];
+    elemIdxType row_offset[SP_H+1];
     #pragma HLS ARRAY_PARTITION variable=row_offset type=complete
-    load_row_offset: for (offsetIdxType i=0; i<A_ROWS+1; i++) {
+    load_row_offset: for (offsetIdxType i=0; i<SP_H+1; i++) {
 	#pragma HLS PIPELINE
         row_offset[i] = row_offset_ptr[i];
     }
 
-    elemIdxType TOTAL_NNZ = row_offset[A_ROWS];
+    elemIdxType TOTAL_NNZ = row_offset[SP_H];
 
     colIdxType col_indices[SP_MAX_NNZ];
     #pragma HLS ARRAY_PARTITION variable=col_indices type=complete
@@ -156,34 +162,34 @@ void csr_gemm(matType *data_ptr, elemIdxType *row_offset_ptr, colIdxType *col_in
         values[i] = (i<TOTAL_NNZ) ? (values_ptr[i]):matType(0);
     }
    
-    matType gemm_result[A_ROWS][A_COLS];
+    matType gemm_result[SP_H][SP_W];
     #pragma HLS ARRAY_PARTITION variable=gemm_result type=complete dim=1
-    _csr_gemm<A_COLS,A_ROWS,A_ROWS,A_COLS>(data, gemm_result, row_offset, col_indices, values);
+    _csr_gemm<SP_W,SP_H,SP_H,SP_W>(data, gemm_result, row_offset, col_indices, values);
 
     // 編譯階段就決定合成哪種電路
 //    if constexpr (STORAGE_FMT_ID==FMT_COO) {
-//        _coo_gemm<A_COLS,A_ROWS,A_NNZ>(data,gemm_result,A_row_idx,A_col_idx,A_values);
+//        _coo_gemm<SP_W,SP_H,A_NNZ>(data,gemm_result,A_row_idx,A_col_idx,A_values);
 //    }
 //    else if (STORAGE_FMT_ID==FMT_CSR) {
-//        _csr_gemm<A_COLS,A_ROWS,A_ROWS,A_COLS,A_NNZ>(data,gemm_result,A_row_ptr,A_col_idx,A_values);
+//        _csr_gemm<SP_W,SP_H,SP_H,SP_W,A_NNZ>(data,gemm_result,A_row_ptr,A_col_idx,A_values);
 //    }
 //    else {
 //
 //    }
 
-    write_data: for (rowIdxType r=0; r<A_ROWS; r++) {
-		for (colIdxType c=0; c<A_COLS; c++) {
+    write_data: for (rowIdxType r=0; r<SP_H; r++) {
+		for (colIdxType c=0; c<SP_W; c++) {
 		#pragma HLS PIPELINE
-			out_ptr[r*A_COLS+c] = gemm_result[r][c];
+			out_ptr[r*SP_W+c] = gemm_result[r][c];
 		}
 	}
 }
 
 //int main() {
-//  matType data[A_COLS*A_ROWS], out[A_ROWS*A_COLS];
+//  matType data[SP_W*SP_H], out[SP_H*SP_W];
 //
-//  int row_ptr[A_ROWS+1];
-//  for (int i=0; i<A_ROWS+1; i++)
+//  int row_ptr[SP_H+1];
+//  for (int i=0; i<SP_H+1; i++)
 //    row_ptr[i] = A_row_idx[i];
 //
 //  int col_indices[A_NNZ];

@@ -19,18 +19,27 @@ constexpr int LOG2_CEIL(int x) {
     return r;
 }
 
+// 稀疏矩陣高
+#define SP_H 5
+// 稀疏矩陣寬
+#define SP_W 5
+// 資料矩陣高
+#define DATA_H 5
+// 資料矩陣寬
+#define DATA_W 5
+
 // 稀疏矩陣最多有幾個非零元素
-#define SP_MAX_NNZ (A_ROWS*A_COLS)
+#define SP_MAX_NNZ (SP_H*SP_W)
 
 // row, col 索引所需要使用的位元數
-typedef ap_uint<LOG2_CEIL(A_ROWS)> rowIdxType;
-typedef ap_uint<LOG2_CEIL(A_COLS)> colIdxType;
+typedef ap_uint<LOG2_CEIL(SP_H)> rowIdxType;
+typedef ap_uint<LOG2_CEIL(SP_W)> colIdxType;
 // offset 數值所需要的位元數
-typedef ap_uint<LOG2_CEIL(A_ROWS+1)> offsetIdxType;
+typedef ap_uint<LOG2_CEIL(SP_H+1)> offsetIdxType;
 typedef ap_uint<LOG2_CEIL(SP_MAX_NNZ)> elemIdxType;
 
 // 8 bits integer -128~127
-typedef ap_int<8> matType;
+typedef ap_int<32> matType;
 //typedef int matType;
 
 
