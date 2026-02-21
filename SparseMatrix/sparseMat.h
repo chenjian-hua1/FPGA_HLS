@@ -3,8 +3,36 @@
 
 #include <stdio.h>
 #include "sparse_data.h"
+#include "ap_int.h"
 
-typedef int32_t MatType;
+// 計算該數字需要使用多少位元
+constexpr int LOG2_CEIL(int x) {
+    // 定義域：x >= 1
+    // ceil(log2(1)) = 0, ceil(log2(2)) = 1, ceil(log2(3)) = 2, ...
+    int r = 0;
+    int p = 1;
+    // 直到 2^r 超過x
+    while (p < x) {
+        p*=2;
+        ++r;
+    }
+    return r;
+}
+
+// 稀疏矩陣最多有幾個非零元素
+#define SP_MAX_NNZ (A_ROWS*A_COLS)
+
+// row, col 索引所需要使用的位元數
+typedef ap_uint<LOG2_CEIL(A_ROWS)> rowIdxType;
+typedef ap_uint<LOG2_CEIL(A_COLS)> colIdxType;
+// offset 數值所需要的位元數
+typedef ap_uint<LOG2_CEIL(A_ROWS+1)> offsetIdxType;
+typedef ap_uint<LOG2_CEIL(SP_MAX_NNZ)> elemIdxType;
+
+// 8 bits integer -128~127
+typedef ap_int<8> matType;
+//typedef int matType;
+
 
 // 每種格式一個代號（整數）
 #define FMT_COO   0
@@ -20,6 +48,7 @@ typedef int32_t MatType;
 #define STORAGE_FMT_ID FMT_CSR
 #endif
 
-void sparse_gemm(MatType *data_ptr, MatType *out);
+
+void sparse_gemm(matType *data_ptr, matType *out);
 
 #endif
