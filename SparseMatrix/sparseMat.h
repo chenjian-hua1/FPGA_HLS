@@ -49,6 +49,6 @@ typedef ap_int<8> matType;
 #endif
 
 
-void sparse_gemm(matType *data_ptr, matType *out);
+void csr_gemm(matType *data_ptr, elemIdxType *row_offset_ptr, colIdxType *col_indices_ptr, matType *values_ptr, matType *out_ptr);
 
 #endif

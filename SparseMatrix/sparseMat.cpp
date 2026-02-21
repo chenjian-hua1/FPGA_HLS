@@ -179,16 +179,6 @@ void csr_gemm(matType *data_ptr, elemIdxType *row_offset_ptr, colIdxType *col_in
 	}
 }
 
-void csr_gemm1(matType data[A_COLS][A_ROWS], elemIdxType row_offset[A_ROWS+1], colIdxType col_indices[SP_MAX_NNZ], matType values[SP_MAX_NNZ], matType out[A_ROWS][A_COLS]) {
-	#pragma HLS ARRAY_PARTITION variable=data type=complete dim=0
-	#pragma HLS ARRAY_PARTITION variable=out type=complete dim=1
-	#pragma HLS ARRAY_PARTITION variable=row_offset type=complete
-	#pragma HLS ARRAY_PARTITION variable=col_indices type=complete
-	#pragma HLS ARRAY_PARTITION variable=values type=complete
-
-    _csr_gemm<A_COLS,A_ROWS,A_ROWS,A_COLS>(data, out, row_offset, col_indices, values);
-}
-
 //int main() {
 //  matType data[A_COLS*A_ROWS], out[A_ROWS*A_COLS];
 //
