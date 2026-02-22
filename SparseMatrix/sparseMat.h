@@ -27,16 +27,10 @@ constexpr int LOG2_CEIL(int x) {
 #define DATA_H 5
 // 資料矩陣寬
 #define DATA_W 5
-
+// 固定稀疏矩陣每行的nnz
+#define SP_NNZ_PER_ROW 2
 // 稀疏矩陣最多有幾個非零元素
-#define SP_MAX_NNZ (SP_H*SP_W)
-
-// row, col 索引所需要使用的位元數
-typedef ap_uint<LOG2_CEIL(SP_H)> rowIdxType;
-typedef ap_uint<LOG2_CEIL(SP_W)> colIdxType;
-// offset 數值所需要的位元數
-typedef ap_uint<LOG2_CEIL(SP_H+1)> offsetIdxType;
-typedef ap_uint<LOG2_CEIL(SP_MAX_NNZ)> elemIdxType;
+#define SP_MAX_NNZ (SP_NNZ_PER_ROW*SP_H)
 
 // 8 bits integer -128~127
 typedef ap_int<32> matType;
@@ -58,6 +52,12 @@ typedef ap_int<32> matType;
 #endif
 
 
-void csr_gemm(matType *data_ptr, elemIdxType *row_offset_ptr, colIdxType *col_indices_ptr, matType *values_ptr, matType *out_ptr);
+void csr_gemm(
+    matType data_ptr[DATA_H*DATA_W],
+    ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset_ptr[SP_H+1],
+    ap_uint<LOG2_CEIL(SP_W)> col_indices_ptr[SP_MAX_NNZ],
+    matType values_ptr[SP_MAX_NNZ],
+    matType out_ptr[SP_H*DATA_W]
+);
 
 #endif
