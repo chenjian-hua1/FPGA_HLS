@@ -99,12 +99,12 @@ void rand_gen_sp_mat(T sp_mat[SP_ROWS][SP_COLS], int maximum = 20, float density
     }
 }
 
-template<typename T, int SP_ROWS, int SP_COLS>
+template<typename T, int SP_ROWS, int SP_COLS, int MAX_NNZ>
 void mat2csr(
     T sp_mat[SP_ROWS][SP_COLS],
-    ap_uint<LOG2_CEIL(SP_ROWS*SP_COLS)> row_offset[SP_ROWS + 1],
-    ap_uint<LOG2_CEIL(SP_COLS)> col_indices[SP_ROWS * SP_COLS],
-    T values[SP_ROWS * SP_COLS]
+    ap_uint<LOG2_CEIL(MAX_NNZ)> row_offset[SP_ROWS + 1],
+    ap_uint<LOG2_CEIL(SP_COLS)> col_indices[MAX_NNZ],
+    T values[MAX_NNZ]
 ) {
     int nnz = 0;
     row_offset[0] = 0;
@@ -128,7 +128,9 @@ int main() {
 
     // 生成隨機的稀疏矩陣 & 資料矩陣
     matType sp_mat[SP_H][SP_W];
-    rand_gen_sp_mat<matType, SP_H, SP_W>(sp_mat);
+    // rand_gen_sp_mat<matType, SP_H, SP_W>(sp_mat);
+    rand_gen_sp_mat_fixed_nnz<matType, SP_H, SP_W>(sp_mat, 20, SP_NNZ_PER_ROW);
+
     cout << "SP MAT" << endl;
     print_2d(&sp_mat[0][0], SP_H, SP_W);
 
@@ -138,16 +140,19 @@ int main() {
     print_2d(&data_mat[0][0], DATA_H, DATA_W);
 
     // 轉換 CSR 格式
-    elemIdxType row_offset[SP_H+1];
-    colIdxType col_indices[SP_H*SP_W];
+    ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset[SP_H+1];
+    ap_uint<LOG2_CEIL(SP_W)> col_indices[SP_H*SP_W];
     matType values[SP_H*SP_W];
 
 
-    mat2csr<matType, SP_H, SP_W>(sp_mat, row_offset, col_indices, values);
+    mat2csr<matType, SP_H, SP_W, SP_MAX_NNZ>(sp_mat, row_offset, col_indices, values);
 
-//    print_1d(row_offset, SP_H+1);
-//    print_1d(col_indices, SP_H*SP_W);
-//    print_1d(values, SP_H*SP_W);
+    cout << "row offset" << endl;
+    print_1d(row_offset, SP_H+1);
+    cout << "col_indices" << endl;
+    print_1d(col_indices, SP_MAX_NNZ);
+    cout << "values" << endl;
+    print_1d(values, SP_MAX_NNZ);
     
     // 計算正確矩陣乘法結果 (Software)
     matType gemm_result_sw[SP_H][DATA_W];
