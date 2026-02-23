@@ -27,7 +27,7 @@ constexpr bool IS_POW2(int x) {
 // 計算 for index (0..maxium-1) 需要的位元寬度
 // 規則：若 maxium 是 2 的冪次方 -> LOG2_CEIL(maxium + 1)
 // 否則 -> LOG2_CEIL(maxium)
-constexpr int FOR_INDEX_BITS(int maxium) {
+constexpr int FOR_IDX_BITS(int maxium) {
     return IS_POW2(maxium) ? LOG2_CEIL(maxium + 1) : LOG2_CEIL(maxium);
 }
 
