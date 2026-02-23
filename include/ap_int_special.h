@@ -11,10 +11,7 @@
 #endif
 // FIXME AP_AUTOCC cannot handle many standard headers, so declare instead of
 // include.
-// #include <complex>
-// namespace std {
-// template<typename _Tp> class complex;
-// }
+#include <complex>
 
 #if !defined(_LIBCPP_COMPLEX) && !defined(_GLIBCXX_COMPLEX)
 namespace std {
