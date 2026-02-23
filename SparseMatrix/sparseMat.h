@@ -3,8 +3,39 @@
 
 #include <stdio.h>
 #include "sparse_data.h"
+#include "ap_int.h"
 
-typedef int32_t MatType;
+// 計算該數字需要使用多少位元
+constexpr int LOG2_CEIL(int x) {
+    // 定義域：x >= 1
+    // ceil(log2(1)) = 0, ceil(log2(2)) = 1, ceil(log2(3)) = 2, ...
+    int r = 0;
+    int p = 1;
+    // 直到 2^r 超過x
+    while (p < x) {
+        p*=2;
+        ++r;
+    }
+    return r;
+}
+
+// 稀疏矩陣高
+#define SP_H 5
+// 稀疏矩陣寬
+#define SP_W 5
+// 資料矩陣高
+#define DATA_H 5
+// 資料矩陣寬
+#define DATA_W 5
+// 固定稀疏矩陣每行的nnz
+#define SP_NNZ_PER_ROW 2
+// 稀疏矩陣最多有幾個非零元素
+#define SP_MAX_NNZ (SP_NNZ_PER_ROW*SP_H)
+
+// 8 bits integer -128~127
+typedef ap_int<32> matType;
+//typedef int matType;
+
 
 // 每種格式一個代號（整數）
 #define FMT_COO   0
@@ -20,6 +51,13 @@ typedef int32_t MatType;
 #define STORAGE_FMT_ID FMT_CSR
 #endif
 
-void sparse_gemm(MatType *data_ptr, MatType *out);
+
+void csr_gemm(
+    matType data_ptr[DATA_H*DATA_W],
+    ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset_ptr[SP_H+1],
+    ap_uint<LOG2_CEIL(SP_W)> col_indices_ptr[SP_MAX_NNZ],
+    matType values_ptr[SP_MAX_NNZ],
+    matType out_ptr[SP_H*DATA_W]
+);
 
 #endif

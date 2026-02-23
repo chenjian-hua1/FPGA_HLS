@@ -1,4 +1,5 @@
 #include "sparseMat.h"
+#include <stdio.h>
 #include <iostream>
 
 /* 
@@ -7,112 +8,105 @@
 ==========================================================================================================
 */
 // inner product module
-template <int N>
-void _inner_product(MatType vec1[N], MatType vec2[N], MatType &out, int nnz=N) {
-//#pragma HLS INLINE
+template <int N, bool UNROLL=true>
+void _inner_product(matType vec1[N], matType vec2[N], matType &out) {
+#pragma HLS INLINE
 
+<<<<<<< HEAD
     MatType sum = 0;
     for (int i=0; i<nnz; i++) {
     #pragma HLS UNROLL
         sum += vec1[i]*vec2[i];
+=======
+    matType sum = 0;
+    if constexpr (UNROLL) {
+    	inner_product_unroll: for (ap_uint<LOG2_CEIL(N+1)> i=0; i<N; i++) {
+		#pragma HLS UNROLL
+			sum += (vec1[i]*vec2[i]);
+		}
+    }
+    else {
+    	inner_product_pipe: for (ap_uint<LOG2_CEIL(N+1)> i=0; i<N; i++) {
+		#pragma HLS PIPELINE
+			sum += (vec1[i]*vec2[i]);
+		}
+>>>>>>> c19b73a8f7fd76294f21aa1f0b0a49f4f3ce42c6
     }
 
     out = sum;
 }
 
 // COO (Coordinate) format : save nonzero row, col indices 
-template<int DATA_ROWS, int DATA_COLS, int SPARSE_MAT_NNZ> // local parameter
+template<int DATA_ROWS, int DATA_COLS> // local parameter
 void _coo_gemm(
-    MatType data[DATA_ROWS][DATA_COLS],
-    MatType out[A_ROWS][DATA_COLS],
-    const int row_indices[SPARSE_MAT_NNZ], 
-    const int col_indices[SPARSE_MAT_NNZ], // nonzero indices
-    const int values[SPARSE_MAT_NNZ] // nonzero values
+    matType data[DATA_ROWS][DATA_COLS],
+    matType out[SP_H][DATA_COLS],
+    const int row_indices,
+    const int col_indices, // nonzero indices
+    const int values // nonzero values
 ) {
  #pragma HLS INLINE
     // !!!!!!!!!!!!!!!!!!!!! 錯誤 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+	// 因為不知道 總nnz 所以不知道要取多少資料出來
     // 因為不知道每個 row 的非零元素量，不可能在電路runtime去計算nnz數量
     // 電路 runtime 階段才能知道要設計出多大電路 -> 很奇怪 電路不可能變形
-    // 需要在編譯階段就知道 nnz 等資訊才能設計電路 (轉CSR)
-//    int row_offset = 0;
-//    int current_row = 0;
-//
-//    gemm: for (int i=0; i<SPARSE_MAT_NNZ; i++) {
-//        if (current_row!=row_indices[i] || i==SPARSE_MAT_NNZ-1) {
-//            // 最後一個 row 的上邊界在最後一個idx
-//            bool is_row_end = (i == SPARSE_MAT_NNZ-1) || (row_indices[i+1] != row_indices[i]);
-//            int end = is_row_end ? (i+1) : i;   // end 是「下一個 row_offset」
-//            int nnz = end - row_offset;
-//
-//            // Sparse Row 上的非零 col 索引, 數值
-//            int row_nz_cols[DATA_ROWS];
-//            MatType row_nz_values[DATA_ROWS];
-//
-//            for (int nz_idx=0; nz_idx<DATA_ROWS; nz_idx++) {
-//			#pragma HLS UNROLL
-//                row_nz_cols[nz_idx] = col_indices[row_offset+nz_idx];
-//                row_nz_values[nz_idx] = values[row_offset+nz_idx];
-//            }
-//
-//            // (1,nnz)mat * (nnz,DATA_COLS)mat
-//            for (int c=0; c<DATA_COLS; c++) {
-//			#pragma HLS UNROLL
-//                // 將內積不是對到 0 的部分取出來
-//                MatType col_elements[DATA_ROWS] = {0};
-//                for (int nz_idx=0; nz_idx<DATA_ROWS; nz_idx++) {
-//				#pragma HLS UNROLL
-//                	col_elements[nz_idx] = data[row_nz_cols[nz_idx]][c];
-//                }
-//
-//                _inner_product<DATA_ROWS>(row_nz_values,col_elements,out[current_row][c]);
-//            }
-//
-//            row_offset = i;
-//            current_row = row_indices[i];
-//        }
-//        else {
-//            continue;
-//        }
-//    }
+
 }
 
 // CSR (Coordinate) format : save nonzero row, col indices 
-template<int DATA_ROWS, int DATA_COLS, int SPARSE_ROWS, int SPARSE_COLS, int SPARSE_MAT_NNZ> // local parameter
+template<int DATA_ROWS, int DATA_COLS, int SP_ROWS, int SP_COLS, int MAX_NNZ_PER_ROW> // local parameter
 void _csr_gemm(
-    MatType data[DATA_ROWS][DATA_COLS],
-    MatType out[A_ROWS][DATA_COLS],
-    const int row_offset[SPARSE_MAT_NNZ], 
-    const int col_indices[SPARSE_MAT_NNZ], // nonzero indices
-    const int values[SPARSE_MAT_NNZ] // nonzero values
+    matType data[DATA_ROWS][DATA_COLS],
+    matType out[SP_ROWS][DATA_COLS],
+    ap_uint<LOG2_CEIL(SP_ROWS*MAX_NNZ_PER_ROW)> row_offset[SP_ROWS+1],
+    ap_uint<LOG2_CEIL(SP_COLS)> col_indices[SP_ROWS*MAX_NNZ_PER_ROW], // nonzero indices
+    matType values[SP_ROWS*MAX_NNZ_PER_ROW] // nonzero values
 ) {
-    csr_gemm: for (int r=0; r<SPARSE_ROWS; r++) {
-    #pragma HLS UNROLL
+#pragma HLS INLINE
+#pragma HLS ARRAY_PARTITION variable=out type=complete dim=1
+#pragma HLS ARRAY_PARTITION variable=row_offset type=complete
+#pragma HLS ARRAY_PARTITION variable=col_indices type=complete
+#pragma HLS ARRAY_PARTITION variable=values type=complete
 
-        const int row_start = row_offset[r];
-        const int row_end = row_offset[r+1];
+    csr_gemm: for (ap_uint<LOG2_CEIL(SP_ROWS+1)> r=0; r<SP_ROWS; r++) {
+   #pragma HLS UNROLL
 
-        // constexpr int nnz = row_end-row_start;
-        MatType row_nz_values[A_row_nnz[r]];
-        MatType row_nz_col_idx[A_row_nnz[r]];
+        ap_uint<LOG2_CEIL(SP_ROWS*MAX_NNZ_PER_ROW)> row_start = row_offset[r];
+    	ap_uint<LOG2_CEIL(SP_ROWS*MAX_NNZ_PER_ROW)> row_end = row_offset[r+1];
+        ap_uint<LOG2_CEIL(MAX_NNZ_PER_ROW+1)> nnz = row_end-row_start;
+
+        matType row_nz_values[MAX_NNZ_PER_ROW];
+		#pragma HLS ARRAY_PARTITION variable=row_nz_values type=complete
+        ap_uint<LOG2_CEIL(SP_COLS)> nz_col_idx[MAX_NNZ_PER_ROW];
+		#pragma HLS ARRAY_PARTITION variable=nz_col_idx type=complete
 
         // 抓該 row 的對應範圍的非零 col 索引和數值
-        get_nz_data: for (int nz_idx=0; nz_idx<A_row_nnz[r]; nz_idx++) {
+        // 記得範圍加1 否則當數字為2的冪次方時，可表示範圍 0~(log2(數字)-1) 永遠出不去迴圈
+        get_nz_data: for (ap_uint<LOG2_CEIL(MAX_NNZ_PER_ROW+1)> data_idx=0; data_idx<MAX_NNZ_PER_ROW; data_idx++) {
         #pragma HLS UNROLL
-            row_nz_values[nz_idx] = values[row_start+nz_idx];
-            row_nz_col_idx[nz_idx] = col_indices[row_start+nz_idx];
+            // 是否超過 nnz
+            bool in_nnz_range = (data_idx<nnz);
+
+            // 超過 nnz 代表之後都是 0 -> 多工器去切換 資料,0
+            row_nz_values[data_idx] = (in_nnz_range) ? (values[row_start+data_idx]):matType(0);
+            nz_col_idx[data_idx] = (in_nnz_range) ? (col_indices[row_start+data_idx]):ap_uint<LOG2_CEIL(SP_COLS)>(0);
         }
 
-        for (int c=0; c<DATA_COLS; c++) {
+        mat_mult: for (ap_uint<LOG2_CEIL(DATA_COLS+1)> c=0; c<DATA_COLS; c++) {
             // 將內積中不是對到0的部份取出 
-            MatType col_nz_values[A_row_nnz[r]];
-            load_col_nz: for (int nz_idx=0; nz_idx<A_row_nnz[r]; nz_idx++) {
+            matType col_nz_values[MAX_NNZ_PER_ROW];
+			#pragma HLS ARRAY_PARTITION variable=col_nz_values type=complete
+
+            load_col_nz: for (ap_uint<LOG2_CEIL(MAX_NNZ_PER_ROW+1)> data_idx=0; data_idx<MAX_NNZ_PER_ROW; data_idx++) {
             #pragma HLS UNROLL
-                col_nz_values[nz_idx] = data[row_nz_col_idx[nz_idx]][c];
+                // 是否超過 nnz
+                bool in_nnz_range = (data_idx<nnz);
+                // 超過就給 0
+                col_nz_values[data_idx] = (in_nnz_range) ? (data[nz_col_idx[data_idx]][c]):matType(0);
             }
 
-            _inner_product<DATA_ROWS>(row_nz_values,col_nz_values,out[r][c]);
+            _inner_product<MAX_NNZ_PER_ROW, true>(row_nz_values,col_nz_values,out[r][c]);
         }
-        
     }
 }
 
@@ -123,42 +117,70 @@ void _csr_gemm(
 ==========================================================================================================
 */
 // Sparse Matrix GEMM
-void sparse_gemm(MatType *data_ptr, MatType *out) {
+void csr_gemm(
+    matType data_ptr[DATA_H*DATA_W],
+    ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset_ptr[SP_H+1],
+    ap_uint<LOG2_CEIL(SP_W)> col_indices_ptr[SP_MAX_NNZ],
+    matType values_ptr[SP_MAX_NNZ],
+    matType out_ptr[SP_H*DATA_W]
+) {
+#pragma HLS INTERFACE m_axi port=data_ptr offset=slave bundle=gmem
+#pragma HLS INTERFACE m_axi port=row_offset_ptr offset=slave bundle=gmem
+#pragma HLS INTERFACE m_axi port=col_indices_ptr offset=slave bundle=gmem
+#pragma HLS INTERFACE m_axi port=values_ptr offset=slave bundle=gmem
+#pragma HLS INTERFACE m_axi port=out_ptr offset=slave bundle=gmem
+#pragma HLS INTERFACE m_axi port=out_ptr offset=slave bundle=gmem
 
-	MatType data[A_COLS][A_ROWS];
-	#pragma HLS ARRAY_PARTITION variable=data type=complete dim=0
+#pragma HLS INTERFACE s_axilite port=data_ptr        bundle=control
+#pragma HLS INTERFACE s_axilite port=row_offset_ptr  bundle=control
+#pragma HLS INTERFACE s_axilite port=col_indices_ptr bundle=control
+#pragma HLS INTERFACE s_axilite port=values_ptr      bundle=control
+#pragma HLS INTERFACE s_axilite port=out_ptr         bundle=control
+#pragma HLS INTERFACE s_axilite port=return          bundle=control
 
-	load_data: for (int r=0; r<A_ROWS; r++) {
-        for (int c=0; c<A_COLS; c++) {
-		#pragma HLS PIPELINE II=1
-            data[r][c] = data_ptr[r*A_COLS+c];
+    matType data[DATA_H][DATA_W];
+    #pragma HLS ARRAY_PARTITION variable=data type=complete dim=0
+
+    load_data: for (ap_uint<LOG2_CEIL(DATA_H+1)> r=0; r<DATA_H; r++) {
+        for (ap_uint<LOG2_CEIL(DATA_W+1)> c=0; c<DATA_W; c++) {
+		#pragma HLS PIPELINE
+            data[r][c] = data_ptr[r*DATA_W+c];
         }
     }
 
-    MatType gemm_result[A_ROWS][A_COLS];
-    // 編譯階段就決定合成哪種電路
-    if constexpr (STORAGE_FMT_ID==FMT_COO) {
-        _coo_gemm<A_COLS,A_ROWS,A_NNZ>(data,gemm_result,A_row_idx,A_col_idx,A_values);
+    ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset[SP_H+1];
+    #pragma HLS ARRAY_PARTITION variable=row_offset type=complete
+    load_row_offset: for (ap_uint<LOG2_CEIL(SP_H+1+1)> i=0; i<SP_H+1; i++) {
+	#pragma HLS PIPELINE
+        row_offset[i] = row_offset_ptr[i];
     }
-    else if (STORAGE_FMT_ID==FMT_CSR) {
-        _csr_gemm<A_COLS,A_ROWS,A_ROWS,A_COLS,A_NNZ>(data,gemm_result,A_row_ptr,A_col_idx,A_values);
+
+    // 需要對齊要比較的資料位元寬度
+    ap_uint<LOG2_CEIL(SP_MAX_NNZ+1)> TOTAL_NNZ = row_offset[SP_H];
+
+    ap_uint<LOG2_CEIL(SP_W)> col_indices[SP_MAX_NNZ];
+    #pragma HLS ARRAY_PARTITION variable=col_indices type=complete
+    load_col_indices: for (ap_uint<LOG2_CEIL(SP_MAX_NNZ+1)> i=0; i<SP_MAX_NNZ; i++) {
+	#pragma HLS PIPELINE
+        col_indices[i] = (i<TOTAL_NNZ) ? (col_indices_ptr[i]):ap_uint<LOG2_CEIL(SP_W)>(0);
     }
-    else {
 
+    matType values[SP_MAX_NNZ];
+    #pragma HLS ARRAY_PARTITION variable=values type=complete
+    load_vals: for (ap_uint<LOG2_CEIL(SP_MAX_NNZ+1)> i=0; i<SP_MAX_NNZ; i++) {
+    #pragma HLS PIPELINE
+        values[i] = (i<TOTAL_NNZ) ? (values_ptr[i]):matType(0);
     }
-        
+   
+    matType gemm_result[SP_H][DATA_W];
+    #pragma HLS ARRAY_PARTITION variable=gemm_result type=complete dim=1
 
-    write_data: for (int r=0; r<A_ROWS; r++) {
-        for (int c=0; c<A_COLS; c++) {
-            out[r*A_COLS+c] = gemm_result[r][c];
-        }
-    }
-}
+    _csr_gemm<DATA_H,DATA_W,SP_H,SP_W,SP_NNZ_PER_ROW>(data, gemm_result, row_offset, col_indices, values);
 
-
-int main() {
-   MatType *data, out[A_ROWS*A_COLS];
-   sparse_gemm(data, out);
-   std::cout << "hello world" << std::endl;
-   return 0;
+    write_data: for (ap_uint<LOG2_CEIL(SP_H+1)> r=0; r<SP_H; r++) {
+		for (ap_uint<LOG2_CEIL(SP_W+1)> c=0; c<SP_W; c++) {
+		#pragma HLS PIPELINE
+			out_ptr[r*SP_W+c] = gemm_result[r][c];
+		}
+	}
 }
