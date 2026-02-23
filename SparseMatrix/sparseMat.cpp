@@ -13,7 +13,7 @@ void _inner_product(MatType vec1[N], MatType vec2[N], MatType &out, int nnz=N) {
 
     MatType sum = 0;
     for (int i=0; i<nnz; i++) {
-    #pragma HLS PIPELINE
+    #pragma HLS UNROLL
         sum += vec1[i]*vec2[i];
     }
 
