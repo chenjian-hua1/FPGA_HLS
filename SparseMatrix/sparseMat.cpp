@@ -25,7 +25,7 @@ void _inner_product(matType vec1[N], matType vec2[N], matType &out) {
 			sum += (vec1[i]*vec2[i]);
 		}
     }
-
+    
     out = sum;
 }
 
