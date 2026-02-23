@@ -14,13 +14,13 @@ void _inner_product(matType vec1[N], matType vec2[N], matType &out) {
 
     matType sum = 0;
     if constexpr (UNROLL) {
-    	inner_product_unroll: for (ap_uint<LOG2_CEIL(N+1)> i=0; i<N; i++) {
+    	inner_product_unroll: for (ap_uint<FOR_INDEX_BITS(N)> i=0; i<N; i++) {
 		#pragma HLS UNROLL
 			sum += (vec1[i]*vec2[i]);
 		}
     }
     else {
-    	inner_product_pipe: for (ap_uint<LOG2_CEIL(N+1)> i=0; i<N; i++) {
+    	inner_product_pipe: for (ap_uint<FOR_INDEX_BITS(N)> i=0; i<N; i++) {
 		#pragma HLS PIPELINE
 			sum += (vec1[i]*vec2[i]);
 		}
@@ -61,7 +61,7 @@ void _csr_gemm(
 #pragma HLS ARRAY_PARTITION variable=col_indices type=complete
 #pragma HLS ARRAY_PARTITION variable=values type=complete
 
-    csr_gemm: for (ap_uint<LOG2_CEIL(SP_ROWS+1)> r=0; r<SP_ROWS; r++) {
+    csr_gemm: for (ap_uint<FOR_INDEX_BITS(SP_ROWS)> r=0; r<SP_ROWS; r++) {
    #pragma HLS UNROLL
 
         ap_uint<LOG2_CEIL(SP_ROWS*MAX_NNZ_PER_ROW)> row_start = row_offset[r];
@@ -75,7 +75,7 @@ void _csr_gemm(
 
         // 抓該 row 的對應範圍的非零 col 索引和數值
         // 記得範圍加1 否則當數字為2的冪次方時，可表示範圍 0~(log2(數字)-1) 永遠出不去迴圈
-        get_nz_data: for (ap_uint<LOG2_CEIL(MAX_NNZ_PER_ROW+1)> data_idx=0; data_idx<MAX_NNZ_PER_ROW; data_idx++) {
+        get_nz_data: for (ap_uint<FOR_INDEX_BITS(MAX_NNZ_PER_ROW)> data_idx=0; data_idx<MAX_NNZ_PER_ROW; data_idx++) {
         #pragma HLS UNROLL
             // 是否超過 nnz
             bool in_nnz_range = (data_idx<nnz);
@@ -85,12 +85,12 @@ void _csr_gemm(
             nz_col_idx[data_idx] = (in_nnz_range) ? (col_indices[row_start+data_idx]):ap_uint<LOG2_CEIL(SP_COLS)>(0);
         }
 
-        mat_mult: for (ap_uint<LOG2_CEIL(DATA_COLS+1)> c=0; c<DATA_COLS; c++) {
+        mat_mult: for (ap_uint<FOR_INDEX_BITS(DATA_COLS)> c=0; c<DATA_COLS; c++) {
             // 將內積中不是對到0的部份取出 
             matType col_nz_values[MAX_NNZ_PER_ROW];
 			#pragma HLS ARRAY_PARTITION variable=col_nz_values type=complete
 
-            load_col_nz: for (ap_uint<LOG2_CEIL(MAX_NNZ_PER_ROW+1)> data_idx=0; data_idx<MAX_NNZ_PER_ROW; data_idx++) {
+            load_col_nz: for (ap_uint<FOR_INDEX_BITS(MAX_NNZ_PER_ROW)> data_idx=0; data_idx<MAX_NNZ_PER_ROW; data_idx++) {
             #pragma HLS UNROLL
                 // 是否超過 nnz
                 bool in_nnz_range = (data_idx<nnz);
@@ -134,8 +134,8 @@ void csr_gemm(
     matType data[DATA_H][DATA_W];
     #pragma HLS ARRAY_PARTITION variable=data type=complete dim=0
 
-    load_data: for (ap_uint<LOG2_CEIL(DATA_H+1)> r=0; r<DATA_H; r++) {
-        for (ap_uint<LOG2_CEIL(DATA_W+1)> c=0; c<DATA_W; c++) {
+    load_data: for (ap_uint<FOR_INDEX_BITS(DATA_H)> r=0; r<DATA_H; r++) {
+        for (ap_uint<FOR_INDEX_BITS(DATA_W)> c=0; c<DATA_W; c++) {
 		#pragma HLS PIPELINE
             data[r][c] = data_ptr[r*DATA_W+c];
         }
@@ -143,7 +143,7 @@ void csr_gemm(
 
     ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset[SP_H+1];
     #pragma HLS ARRAY_PARTITION variable=row_offset type=complete
-    load_row_offset: for (ap_uint<LOG2_CEIL(SP_H+1+1)> i=0; i<SP_H+1; i++) {
+    load_row_offset: for (ap_uint<FOR_INDEX_BITS(SP_H+1)> i=0; i<SP_H+1; i++) {
 	#pragma HLS PIPELINE
         row_offset[i] = row_offset_ptr[i];
     }
@@ -153,14 +153,14 @@ void csr_gemm(
 
     ap_uint<LOG2_CEIL(SP_W)> col_indices[SP_MAX_NNZ];
     #pragma HLS ARRAY_PARTITION variable=col_indices type=complete
-    load_col_indices: for (ap_uint<LOG2_CEIL(SP_MAX_NNZ+1)> i=0; i<SP_MAX_NNZ; i++) {
+    load_col_indices: for (ap_uint<FOR_INDEX_BITS(SP_MAX_NNZ)> i=0; i<SP_MAX_NNZ; i++) {
 	#pragma HLS PIPELINE
         col_indices[i] = (i<TOTAL_NNZ) ? (col_indices_ptr[i]):ap_uint<LOG2_CEIL(SP_W)>(0);
     }
 
     matType values[SP_MAX_NNZ];
     #pragma HLS ARRAY_PARTITION variable=values type=complete
-    load_vals: for (ap_uint<LOG2_CEIL(SP_MAX_NNZ+1)> i=0; i<SP_MAX_NNZ; i++) {
+    load_vals: for (ap_uint<FOR_INDEX_BITS(SP_MAX_NNZ)> i=0; i<SP_MAX_NNZ; i++) {
     #pragma HLS PIPELINE
         values[i] = (i<TOTAL_NNZ) ? (values_ptr[i]):matType(0);
     }
@@ -170,8 +170,8 @@ void csr_gemm(
 
     _csr_gemm<DATA_H,DATA_W,SP_H,SP_W,SP_NNZ_PER_ROW>(data, gemm_result, row_offset, col_indices, values);
 
-    write_data: for (ap_uint<LOG2_CEIL(SP_H+1)> r=0; r<SP_H; r++) {
-		for (ap_uint<LOG2_CEIL(SP_W+1)> c=0; c<SP_W; c++) {
+    write_data: for (ap_uint<FOR_INDEX_BITS(SP_H)> r=0; r<SP_H; r++) {
+		for (ap_uint<FOR_INDEX_BITS(SP_W)> c=0; c<SP_W; c++) {
 		#pragma HLS PIPELINE
 			out_ptr[r*SP_W+c] = gemm_result[r][c];
 		}
