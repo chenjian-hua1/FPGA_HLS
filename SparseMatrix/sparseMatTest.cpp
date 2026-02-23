@@ -170,6 +170,17 @@ int main() {
     print_2d(&gemm_result_hw[0][0], SP_H, DATA_W);
 
     // 比對電路是否計算正確
+    bool correct = true;
+    for (int r=0; r<SP_H; r++) {
+        for (int c=0; c<DATA_W; c++) {
+            if (gemm_result_hw[r][c]!=gemm_result_sw[r][c]) {
+                correct = false;
+                break;
+            }
+        }
+    }
 
-    return 0;
+    cout << "Test Success: " << correct << endl;
+
+    return (correct) ? (0):(1);
 }
