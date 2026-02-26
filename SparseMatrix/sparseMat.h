@@ -48,14 +48,6 @@ constexpr int FOR_IDX_BITS(int maxium) {
 typedef ap_int<32> matType;
 //typedef int matType;
 
-
-// 每種格式一個代號（整數）
-#define FMT_COO   0
-#define FMT_CSR   1
-#define FMT_SELL  2
-#define FMT_BSR   3
-#define FMT_ELL   4
-
 // ...之後要加就一直加
 enum FMT {
     COO,
