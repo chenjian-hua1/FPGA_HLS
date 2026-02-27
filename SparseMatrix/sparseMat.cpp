@@ -29,23 +29,6 @@ void _inner_product(matType vec1[N], matType vec2[N], matType &out) {
     out = sum;
 }
 
-// COO (Coordinate) format : save nonzero row, col indices 
-template<int DATA_ROWS, int DATA_COLS> // local parameter
-void _coo_gemm(
-    matType data[DATA_ROWS][DATA_COLS],
-    matType out[SP_H][DATA_COLS],
-    const int row_indices,
-    const int col_indices, // nonzero indices
-    const int values // nonzero values
-) {
- #pragma HLS INLINE
-    // !!!!!!!!!!!!!!!!!!!!! 錯誤 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-	// 因為不知道 總nnz 所以不知道要取多少資料出來
-    // 因為不知道每個 row 的非零元素量，不可能在電路runtime去計算nnz數量
-    // 電路 runtime 階段才能知道要設計出多大電路 -> 很奇怪 電路不可能變形
-
-}
-
 // CSR (Coordinate) format : save nonzero row, col indices 
 template<int DATA_ROWS, int DATA_COLS, int SP_ROWS, int SP_COLS, int MAX_NNZ_PER_ROW> // local parameter
 void _csr_gemm(
@@ -104,6 +87,7 @@ void _csr_gemm(
 }
 
 
+
 /* 
 ==========================================================================================================
 ===================================== Top Module Implement ===============================================
@@ -143,6 +127,7 @@ void csr_gemm(
 
     ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset[SP_H+1];
     #pragma HLS ARRAY_PARTITION variable=row_offset type=complete
+
     load_row_offset: for (ap_uint<FOR_IDX_BITS(SP_H+1)> i=0; i<SP_H+1; i++) {
 	#pragma HLS PIPELINE
         row_offset[i] = row_offset_ptr[i];
@@ -153,6 +138,7 @@ void csr_gemm(
 
     ap_uint<LOG2_CEIL(SP_W)> col_indices[SP_MAX_NNZ];
     #pragma HLS ARRAY_PARTITION variable=col_indices type=complete
+
     load_col_indices: for (ap_uint<FOR_IDX_BITS(SP_MAX_NNZ)> i=0; i<SP_MAX_NNZ; i++) {
 	#pragma HLS PIPELINE
         col_indices[i] = (i<TOTAL_NNZ) ? (col_indices_ptr[i]):ap_uint<LOG2_CEIL(SP_W)>(0);
@@ -160,6 +146,7 @@ void csr_gemm(
 
     matType values[SP_MAX_NNZ];
     #pragma HLS ARRAY_PARTITION variable=values type=complete
+
     load_vals: for (ap_uint<FOR_IDX_BITS(SP_MAX_NNZ)> i=0; i<SP_MAX_NNZ; i++) {
     #pragma HLS PIPELINE
         values[i] = (i<TOTAL_NNZ) ? (values_ptr[i]):matType(0);
