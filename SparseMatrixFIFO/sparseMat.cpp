@@ -19,8 +19,8 @@ static void load_nnz(
     const bool IS_ODD = (total_nnz % 2 != 0);
 
     load_nnz_loop: for (int p = 0; p < PAIRS; p++) {
-#pragma HLS PIPELINE II=1
-#pragma HLS LOOP_TRIPCOUNT min=1 max=NNZ_PAIRS
+    #pragma HLS PIPELINE II=1
+    #pragma HLS LOOP_TRIPCOUNT min=1 max=NNZ_PAIRS
 
         packed_nnz_t word = packed_nnz_ptr[p];
 
@@ -57,7 +57,7 @@ static void load_data(
 {
     load_data_r: for (int r = 0; r < DATA_H; r++) {
         load_data_c: for (int c = 0; c < DATA_W; c++) {
-#pragma HLS PIPELINE II=1
+        #pragma HLS PIPELINE II=1
             data_local[r][c] = data_ptr[r * DATA_W + c];
         }
     }
@@ -73,7 +73,7 @@ static void load_row_offset(
     ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset_local[SP_H + 1])
 {
     load_row_off: for (int i = 0; i <= SP_H; i++) {
-#pragma HLS PIPELINE II=1
+    #pragma HLS PIPELINE II=1
         row_offset_local[i] = row_offset_ptr[i];
     }
 }
@@ -99,14 +99,14 @@ static void compute(
 {
     // 片上累加器，按列完全分割（SP_H 個獨立存取埠）
     matType localOut[SP_H][DATA_W];
-#pragma HLS ARRAY_PARTITION variable=localOut dim=1 complete
-#pragma HLS ARRAY_PARTITION variable=data_local dim=1 complete
+    #pragma HLS ARRAY_PARTITION variable=localOut dim=1 complete
+    #pragma HLS ARRAY_PARTITION variable=data_local dim=1 complete
 
     // 初始化
     init_r: for (int r = 0; r < SP_H; r++) {
-#pragma HLS UNROLL
+    #pragma HLS UNROLL
         init_c: for (int c = 0; c < DATA_W; c++) {
-#pragma HLS UNROLL
+        #pragma HLS UNROLL
             localOut[r][c] = 0;
         }
     }
@@ -116,13 +116,13 @@ static void compute(
     // row_offset 在片上，查詢零延遲
     // ----------------------------------------------------------
     int nnz_row[SP_MAX_NNZ];
-#pragma HLS ARRAY_PARTITION variable=nnz_row complete
+    #pragma HLS ARRAY_PARTITION variable=nnz_row complete
 
     build_row_map: for (int r = 0; r < SP_H; r++) {
         int rs = row_offset[r];
         int re = row_offset[r + 1];
         for (int k = rs; k < re; k++) {
-#pragma HLS PIPELINE II=1
+        #pragma HLS PIPELINE II=1
             if (k < SP_MAX_NNZ) nnz_row[k] = r;
         }
     }
@@ -134,8 +134,8 @@ static void compute(
     const int PAIRS = (total_nnz + 1) / 2;
 
     mac_pairs: for (int p = 0; p < PAIRS; p++) {
-#pragma HLS PIPELINE II=1
-#pragma HLS LOOP_TRIPCOUNT min=1 max=NNZ_PAIRS
+    #pragma HLS PIPELINE II=1
+    #pragma HLS LOOP_TRIPCOUNT min=1 max=NNZ_PAIRS
 
         nnz_pair_t np = st_nnz.read();
 
@@ -144,7 +144,7 @@ static void compute(
 
         // 第 0 筆 NNZ：對所有 DATA_W 行累加
         mac_cols0: for (int c = 0; c < DATA_W; c++) {
-#pragma HLS UNROLL
+        #pragma HLS UNROLL
             localOut[row0][c] += np.val0 * data_local[col0][c];
         }
 
@@ -153,7 +153,7 @@ static void compute(
             int row1 = nnz_row[p * 2 + 1];
             int col1 = np.col1;
             mac_cols1: for (int c = 0; c < DATA_W; c++) {
-#pragma HLS UNROLL
+            #pragma HLS UNROLL
                 localOut[row1][c] += np.val1 * data_local[col1][c];
             }
         }
@@ -164,7 +164,7 @@ static void compute(
     // ----------------------------------------------------------
     drain_r: for (int r = 0; r < SP_H; r++) {
         drain_c: for (int c = 0; c < DATA_W; c++) {
-#pragma HLS PIPELINE II=1
+        #pragma HLS PIPELINE II=1
             out_elem_t e;
             e.val = localOut[r][c];
             e.row = r;
@@ -184,7 +184,7 @@ static void store(
     matType                  out_ptr[SP_H * DATA_W])
 {
     store_loop: for (int i = 0; i < SP_H * DATA_W; i++) {
-#pragma HLS PIPELINE II=1
+    #pragma HLS PIPELINE II=1
         out_elem_t e = st_out.read();
         out_ptr[e.row * DATA_W + e.col] = e.val;
     }
@@ -215,16 +215,16 @@ void csr_gemm(
 
     // 片上緩衝（load_data / load_row_offset 寫入，compute 讀取）
     matType data_local[DATA_H][DATA_W];
-#pragma HLS ARRAY_PARTITION variable=data_local dim=1 complete
+    #pragma HLS ARRAY_PARTITION variable=data_local dim=1 complete
 
     ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset_local[SP_H + 1];
-#pragma HLS ARRAY_PARTITION variable=row_offset_local complete
+    #pragma HLS ARRAY_PARTITION variable=row_offset_local complete
 
     // NNZ stream（load_nnz → compute）
     hls::stream<nnz_pair_t>  st_nnz("st_nnz");
     hls::stream<out_elem_t>  st_out("st_out");
-#pragma HLS STREAM variable=st_nnz depth=NNZ_PAIRS
-#pragma HLS STREAM variable=st_out depth=SP_H*DATA_W
+    #pragma HLS STREAM variable=st_nnz depth=NNZ_PAIRS
+    #pragma HLS STREAM variable=st_out depth=SP_H*DATA_W
 
     const int total_nnz = SP_NNZ_PER_ROW * SP_H;  // 已知為固定值
 

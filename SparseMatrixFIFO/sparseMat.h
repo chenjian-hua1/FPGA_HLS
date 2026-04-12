@@ -28,7 +28,7 @@ constexpr int FOR_IDX_BITS(int maxium) {
 #define DATA_H         5    // 稠密矩陣列數（= SP_W）
 #define DATA_W         5    // 稠密矩陣行數
 #define SP_NNZ_PER_ROW 2    // 每列固定非零數
-#define SP_MAX_NNZ     (SP_NNZ_PER_ROW * SP_H)
+#define SP_MAX_NNZ     (SP_NNZ_PER_ROW * SP_H) // 稀疏矩陣最大非零元素量
 
 // ----------------------------------------------------------------
 // 資料型別
