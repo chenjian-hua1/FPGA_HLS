@@ -4,6 +4,34 @@
 #include <ctime>
 using namespace std;
 
+// ================================================================
+// 固定稀疏矩陣（SP_H=5, SP_W=5, SP_NNZ_PER_ROW=2）
+//
+//   row 0: (col=1, val=3), (col=4, val=7)
+//   row 1: (col=0, val=5), (col=3, val=2)
+//   row 2: (col=2, val=8), (col=4, val=1)
+//   row 3: (col=0, val=6), (col=1, val=4)
+//   row 4: (col=2, val=9), (col=3, val=3)
+// ================================================================
+static matType SP_MAT[SP_H][SP_W] = {
+    { 0, 3, 0, 0, 7 },
+    { 5, 0, 0, 2, 0 },
+    { 0, 0, 8, 0, 1 },
+    { 6, 4, 0, 0, 0 },
+    { 0, 0, 9, 3, 0 }
+};
+ 
+// ================================================================
+// 固定稠密矩陣（DATA_H=5, DATA_W=5）
+// ================================================================
+static matType DATA_MAT[DATA_H][DATA_W] = {
+    { 1, 2, 3, 4, 5 },
+    { 6, 7, 8, 9, 10 },
+    { 11, 12, 13, 14, 15 },
+    { 16, 17, 18, 19, 20 },
+    { 21, 22, 23, 24, 25 }
+};
+ 
 // ----------------------------------------------------------------
 // 打包工具：將單筆 (val, col) 打包成 packed_nnz_t
 //   [COL_BITS+VAL_BITS-1 : COL_BITS] = val
@@ -117,26 +145,26 @@ int main() {
     srand(time(nullptr));
 
     // 生成隨機矩陣
-    matType sp_mat[SP_H][SP_W];
-    rand_sp_fixed<matType, SP_H, SP_W>(sp_mat);
+    // matType sp_mat[SP_H][SP_W];
+    // rand_sp_fixed<matType, SP_H, SP_W>(sp_mat);
 
-    matType data_mat[DATA_H][DATA_W];
-    for (int r = 0; r < DATA_H; r++)
-        for (int c = 0; c < DATA_W; c++)
-            data_mat[r][c] = (rand() % 20);
+    // matType data_mat[DATA_H][DATA_W];
+    // for (int r = 0; r < DATA_H; r++)
+    //     for (int c = 0; c < DATA_W; c++)
+    //         data_mat[r][c] = (rand() % 20);
 
     // 轉換為 packed NNZ + packed row_offset
     packed_ro_t  packed_ro[RO_WORDS];
     packed_nnz_t packed_nnz[NNZ_WORDS];
-    mat2csr_packed(sp_mat, packed_ro, packed_nnz);
+    mat2csr_packed(SP_MAT, packed_ro, packed_nnz);
 
     // 軟體黃金值
     matType sw_result[SP_H][DATA_W];
-    gemm_sw<matType, SP_H, SP_W, DATA_W>(sp_mat, data_mat, sw_result);
+    gemm_sw<matType, SP_H, SP_W, DATA_W>(SP_MAT, DATA_MAT, sw_result);
 
     // HLS kernel
     matType hw_result[SP_H * DATA_W];
-    csr_gemm(&data_mat[0][0], packed_ro, packed_nnz, hw_result);
+    csr_gemm(&DATA_MAT[0][0], packed_ro, packed_nnz, hw_result);
 
     // 驗證
     bool correct = true;
