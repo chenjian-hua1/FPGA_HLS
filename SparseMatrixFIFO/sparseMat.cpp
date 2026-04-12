@@ -3,12 +3,10 @@
 // ================================================================
 // Stage 1 — load_nnz
 //
-//  讀取 64-bit packed word，拆出單筆 (val, col_idx)
+//  讀取 packed word，拆出單筆 (val, col_idx)
 //  打包格式：
 //    [COL_BITS+VAL_BITS-1:COL_BITS] = val
 //    [COL_BITS-1: 0] = col_idx
-//
-//  每個 NNZ 對應一個 64-bit word，共 NNZ_WORDS 個
 // ================================================================
 static void load_nnz(
     packed_nnz_t              packed_nnz_ptr[NNZ_WORDS],
@@ -34,7 +32,6 @@ static void load_nnz(
 // Stage 2 — load_data
 //
 //  將稠密矩陣 DATA 從 DRAM 搬入片上 BRAM/FF
-//  pipeline II=1，搬完後供 compute 隨機存取
 // ================================================================
 static void load_data(
     matType  data_ptr[DATA_H * DATA_W],
@@ -51,41 +48,44 @@ static void load_data(
 // ================================================================
 // Stage 3 — load_row_offset
 //
-//  讀取 CSR row_offset 陣列至片上
+//  讀取 packed row_offset 陣列至片上
+//
+//  每個 packed_ro_t word 儲存相鄰兩個 row_offset 元素：
+//    高位 [2*RO_BITS-1 : RO_BITS] = row_offset[r+1]
+//    低位 [RO_BITS-1   :       0] = row_offset[r]
+//
+//  compute 端讀取 ro_local[r] 即可同一 clock 取得
+//  rs = offset[r] 與 re = offset[r+1]
 // ================================================================
 static void load_row_offset(
-    ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset_ptr[SP_H + 1],
-    ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset_local[SP_H + 1])
+    packed_ro_t  packed_ro_ptr[RO_WORDS],
+    packed_ro_t  ro_local[RO_WORDS])
 {
-    load_row_off: for (int i = 0; i <= SP_H; i++) {
+    load_row_off: for (int i = 0; i < RO_WORDS; i++) {
     #pragma HLS PIPELINE II=1
-        row_offset_local[i] = row_offset_ptr[i];
+        ro_local[i] = packed_ro_ptr[i];
     }
 }
 
 // ================================================================
 // Stage 4 — compute
 //
-//  從 stream 依序接收 nnz_elem，根據 row_offset 判斷列歸屬
-//  對每個非零元素：累加 val * data[col][c]（對所有 DATA_W 行）
+//  從 stream 依序接收 nnz_elem，根據 ro_local 判斷列歸屬
 //
-//  設計重點：
-//    - localOut 按 dim=1（列）完全分割 → SP_H 個輸出可同時寫
-//    - 每 clock 處理一筆 NNZ
-//    - 用全域 nnz_counter 追蹤目前處理到第幾個 NNZ，
-//      配合 row_offset 判斷列邊界
+//  每次迭代從 ro_local[r] 單一讀取即得 rs、re，
+//  不需要兩次存取，消除相鄰 index 的讀取衝突
 // ================================================================
 static void compute(
-    hls::stream<nnz_elem_t>         &st_nnz,
-    matType                          data_local[DATA_H][DATA_W],
-    ap_uint<LOG2_CEIL(SP_MAX_NNZ)>   row_offset[SP_H + 1],
-    hls::stream<out_elem_t>         &st_out,
-    int                              total_nnz)
+    hls::stream<nnz_elem_t>  &st_nnz,
+    matType                   data_local[DATA_H][DATA_W],
+    packed_ro_t               ro_local[RO_WORDS],
+    hls::stream<out_elem_t>  &st_out,
+    int                       total_nnz)
 {
     // 片上累加器，按列完全分割（SP_H 個獨立存取埠）
     matType localOut[SP_H][DATA_W];
-    #pragma HLS ARRAY_PARTITION variable=localOut    dim=1 complete
-    #pragma HLS ARRAY_PARTITION variable=data_local  dim=1 complete
+    #pragma HLS ARRAY_PARTITION variable=localOut   dim=1 complete
+    #pragma HLS ARRAY_PARTITION variable=data_local dim=1 complete
 
     // 初始化
     init_r: for (int r = 0; r < SP_H; r++) {
@@ -98,15 +98,23 @@ static void compute(
 
     // ----------------------------------------------------------
     // 預建 nnz → row 反查表
+    //
+    // 從 ro_local[r] 一次讀取即得 rs、re，
+    // 避免舊版讀兩次 row_offset[] 的相鄰 index 衝突
     // ----------------------------------------------------------
     int nnz_row[SP_MAX_NNZ];
     #pragma HLS ARRAY_PARTITION variable=nnz_row complete
 
     build_row_map: for (int r = 0; r < SP_H; r++) {
-        int rs = row_offset[r];
-        int re = row_offset[r + 1];
+    #pragma HLS PIPELINE II=1
+
+        // 一次讀取 packed word，同一 clock 取得 rs 與 re
+        packed_ro_t word = ro_local[r];
+        int rs = (int)(ap_uint<RO_BITS>)word.range(RO_BITS - 1,     0);
+        int re = (int)(ap_uint<RO_BITS>)word.range(2 * RO_BITS - 1, RO_BITS);
+
         for (int k = rs; k < re; k++) {
-        #pragma HLS PIPELINE II=1
+        #pragma HLS UNROLL
             if (k < SP_MAX_NNZ) nnz_row[k] = r;
         }
     }
@@ -165,38 +173,38 @@ static void store(
 // ================================================================
 void csr_gemm(
     matType      data_ptr[DATA_H * DATA_W],
-    ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset_ptr[SP_H + 1],
+    packed_ro_t  packed_ro_ptr[RO_WORDS],
     packed_nnz_t packed_nnz_ptr[NNZ_WORDS],
     matType      out_ptr[SP_H * DATA_W])
 {
 // --- AXI 介面：各 port 用不同 bundle 避免頻寬競爭 ---
 #pragma HLS INTERFACE m_axi port=data_ptr        bundle=gmem0 depth=DATA_H*DATA_W
-#pragma HLS INTERFACE m_axi port=row_offset_ptr  bundle=gmem1 depth=SP_H+1
+#pragma HLS INTERFACE m_axi port=packed_ro_ptr   bundle=gmem1 depth=RO_WORDS
 #pragma HLS INTERFACE m_axi port=packed_nnz_ptr  bundle=gmem2 depth=NNZ_WORDS
 #pragma HLS INTERFACE m_axi port=out_ptr         bundle=gmem3 depth=SP_H*DATA_W
 #pragma HLS INTERFACE s_axilite port=return      bundle=control
 
 #pragma HLS DATAFLOW
 
-    // 片上緩衝（load_data / load_row_offset 寫入，compute 讀取）
-    matType data_local[DATA_H][DATA_W];
+    // 片上緩衝
+    matType     data_local[DATA_H][DATA_W];
     #pragma HLS ARRAY_PARTITION variable=data_local dim=1 complete
 
-    ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset_local[SP_H + 1];
-    #pragma HLS ARRAY_PARTITION variable=row_offset_local complete
+    packed_ro_t ro_local[RO_WORDS];
+    #pragma HLS ARRAY_PARTITION variable=ro_local complete
 
-    // NNZ stream（load_nnz → compute）
+    // stream
     hls::stream<nnz_elem_t>  st_nnz("st_nnz");
     hls::stream<out_elem_t>  st_out("st_out");
     #pragma HLS STREAM variable=st_nnz depth=NNZ_WORDS
     #pragma HLS STREAM variable=st_out depth=SP_H*DATA_W
 
-    const int total_nnz = SP_NNZ_PER_ROW * SP_H;  // 已知為固定值
+    const int total_nnz = SP_NNZ_PER_ROW * SP_H;
 
     // 五個 stage 同時執行
-    load_data      (data_ptr,       data_local);
-    load_row_offset(row_offset_ptr, row_offset_local);
-    load_nnz       (packed_nnz_ptr, st_nnz, total_nnz);
-    compute        (st_nnz, data_local, row_offset_local, st_out, total_nnz);
+    load_data      (data_ptr,        data_local);
+    load_row_offset(packed_ro_ptr,   ro_local);
+    load_nnz       (packed_nnz_ptr,  st_nnz, total_nnz);
+    compute        (st_nnz, data_local, ro_local, st_out, total_nnz);
     store          (st_out, out_ptr);
 }

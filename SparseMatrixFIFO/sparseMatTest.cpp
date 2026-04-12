@@ -5,9 +5,9 @@
 using namespace std;
 
 // ----------------------------------------------------------------
-// 打包工具：將單筆 (val, col) 打包成 42-bit word
-//   [41:10] = val   (32-bit)
-//   [ 9: 0] = col   (10-bit)
+// 打包工具：將單筆 (val, col) 打包成 packed_nnz_t
+//   [COL_BITS+VAL_BITS-1 : COL_BITS] = val
+//   [COL_BITS-1          :         0] = col
 // ----------------------------------------------------------------
 static packed_nnz_t pack_nnz(matType v, int c) {
     packed_nnz_t w = 0;
@@ -15,6 +15,18 @@ static packed_nnz_t pack_nnz(matType v, int c) {
     raw = v.range(VAL_BITS - 1, 0);
     w.range(COL_BITS + VAL_BITS - 1, COL_BITS) = raw;
     w.range(COL_BITS - 1, 0) = (ap_uint<COL_BITS>)c;
+    return w;
+}
+
+// ----------------------------------------------------------------
+// 打包工具：將相鄰兩個 row_offset 元素打包成 packed_ro_t
+//   高位 [2*RO_BITS-1 : RO_BITS] = hi（= row_offset[r+1]）
+//   低位 [RO_BITS-1   :       0] = lo（= row_offset[r]）
+// ----------------------------------------------------------------
+static packed_ro_t pack_ro(int lo, int hi) {
+    packed_ro_t w = 0;
+    w.range(RO_BITS - 1,         0) = (ap_uint<RO_BITS>)lo;
+    w.range(2 * RO_BITS - 1, RO_BITS) = (ap_uint<RO_BITS>)hi;
     return w;
 }
 
@@ -47,20 +59,16 @@ void gemm_sw(T m1[R1][C1], T m2[C1][C2], T res[R1][C2]) {
 }
 
 // ----------------------------------------------------------------
-// 生成固定 NNZ 的稀疏矩陣
+// 生成固定 NNZ 的稀疏矩陣（Fisher-Yates shuffle 確保欄位不重複）
 // ----------------------------------------------------------------
 template<typename T, int ROWS, int COLS>
 void rand_sp_fixed(T mat[ROWS][COLS], int nnz_per_row = SP_NNZ_PER_ROW) {
-    // 用 Fisher-Yates shuffle 確保每列選出不重複欄位
-    // 避免兩次 rand() 選到同一欄，導致實際 NNZ < SP_NNZ_PER_ROW
-    // 進而讓 kernel 讀空 stream 觸發 bus error
     int cols_pool[COLS];
     for (int r = 0; r < ROWS; r++) {
         for (int c = 0; c < COLS; c++) {
             mat[r][c]    = 0;
             cols_pool[c] = c;
         }
-        // shuffle 前 nnz_per_row 個位置，保證欄位不重複
         for (int k = 0; k < nnz_per_row; k++) {
             int swap_idx        = k + rand() % (COLS - k);
             int tmp             = cols_pool[k];
@@ -72,13 +80,17 @@ void rand_sp_fixed(T mat[ROWS][COLS], int nnz_per_row = SP_NNZ_PER_ROW) {
 }
 
 // ----------------------------------------------------------------
-// 稀疏矩陣 → CSR + packed NNZ（每筆 64-bit）
+// 稀疏矩陣 → packed NNZ + packed row_offset
+//
+// packed_ro[r] 儲存 (row_offset[r], row_offset[r+1])，共 SP_H 個 word
 // ----------------------------------------------------------------
 void mat2csr_packed(
     matType      sp_mat[SP_H][SP_W],
-    ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset[SP_H + 1],
+    packed_ro_t  packed_ro[RO_WORDS],
     packed_nnz_t packed_nnz[NNZ_WORDS])
 {
+    // 先建出原始 row_offset（SP_H+1 個元素）
+    int row_offset[SP_H + 1];
     int nnz = 0;
 
     row_offset[0] = 0;
@@ -90,6 +102,11 @@ void mat2csr_packed(
             }
         }
         row_offset[r + 1] = nnz;
+    }
+
+    // 將相鄰兩個 row_offset 打包：packed_ro[r] = (offset[r], offset[r+1])
+    for (int r = 0; r < SP_H; r++) {
+        packed_ro[r] = pack_ro(row_offset[r], row_offset[r + 1]);
     }
 }
 
@@ -108,10 +125,10 @@ int main() {
         for (int c = 0; c < DATA_W; c++)
             data_mat[r][c] = (rand() % 20);
 
-    // 轉換為 CSR + packed NNZ
-    ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset[SP_H + 1];
+    // 轉換為 packed NNZ + packed row_offset
+    packed_ro_t  packed_ro[RO_WORDS];
     packed_nnz_t packed_nnz[NNZ_WORDS];
-    mat2csr_packed(sp_mat, row_offset, packed_nnz);
+    mat2csr_packed(sp_mat, packed_ro, packed_nnz);
 
     // 軟體黃金值
     matType sw_result[SP_H][DATA_W];
@@ -119,7 +136,7 @@ int main() {
 
     // HLS kernel
     matType hw_result[SP_H * DATA_W];
-    csr_gemm(&data_mat[0][0], row_offset, packed_nnz, hw_result);
+    csr_gemm(&data_mat[0][0], packed_ro, packed_nnz, hw_result);
 
     // 驗證
     bool correct = true;
@@ -127,7 +144,7 @@ int main() {
         for (int c = 0; c < DATA_W; c++)
             if (hw_result[r * DATA_W + c] != sw_result[r][c]) {
                 cout << "MISMATCH [" << r << "][" << c << "]: "
-                     << "HW=" << hw_result[r*DATA_W+c]
+                     << "HW=" << hw_result[r * DATA_W + c]
                      << " SW=" << sw_result[r][c] << endl;
                 correct = false;
             }
