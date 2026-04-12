@@ -53,7 +53,7 @@ typedef ap_int<32> matType;
 typedef ap_uint<PACK_BITS> packed_nnz_t;         // 128-bit packed (val,col) pair
 
 // NNZ pair 數量（向上取整）
-#define       ((SP_MAX_NNZ + 1) / 2)
+#define NNZ_PAIRS      ((SP_MAX_NNZ + 1) / 2)
 
 // ----------------------------------------------------------------
 // Stream payload：load → compute 傳遞一對 NNZ 元素
