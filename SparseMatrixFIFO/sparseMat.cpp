@@ -99,23 +99,31 @@ static void compute(
     // ----------------------------------------------------------
     // 預建 nnz → row 反查表
     //
-    // 從 ro_local[r] 一次讀取即得 rs、re，
-    // 避免舊版讀兩次 row_offset[] 的相鄰 index 衝突
+    // 外層迴圈走所有可能的 NNZ index（固定邊界 SP_MAX_NNZ），
+    // 內層迴圈走所有 row（固定邊界 SP_H），兩層皆為靜態 trip count。
+    //
+    // 對每個 NNZ index i，從 ro_local[r] 同一 clock 取得
+    // rs = offset[r] 與 re = offset[r+1]，判斷 rs <= i < re
+    // 即可確定 i 屬於 row r，寫入 nnz_row[i]。
+    //
+    // 消除動態邊界迴圈，HLS 可正確展開並合成，cosim 行為一致。
     // ----------------------------------------------------------
     int nnz_row[SP_MAX_NNZ];
     #pragma HLS ARRAY_PARTITION variable=nnz_row complete
 
-    build_row_map: for (int r = 0; r < SP_H; r++) {
+    build_row_map: for (int i = 0; i < SP_MAX_NNZ; i++) {
     #pragma HLS PIPELINE II=1
+    #pragma HLS LOOP_TRIPCOUNT min=SP_MAX_NNZ max=SP_MAX_NNZ
 
-        // 一次讀取 packed word，同一 clock 取得 rs 與 re
-        packed_ro_t word = ro_local[r];
-        int rs = (int)(ap_uint<RO_BITS>)word.range(RO_BITS - 1,     0);
-        int re = (int)(ap_uint<RO_BITS>)word.range(2 * RO_BITS - 1, RO_BITS);
-
-        for (int k = rs; k < re; k++) {
+        build_row_inner: for (int r = 0; r < SP_H; r++) {
         #pragma HLS UNROLL
-            if (k < SP_MAX_NNZ) nnz_row[k] = r;
+
+            // 一次讀取 packed word，同一 clock 取得 rs 與 re
+            packed_ro_t word = ro_local[r];
+            int rs = (int)(ap_uint<RO_BITS>)word.range(RO_BITS - 1,         0);
+            int re = (int)(ap_uint<RO_BITS>)word.range(2 * RO_BITS - 1, RO_BITS);
+
+            if (rs <= i && i < re) nnz_row[i] = r;
         }
     }
 
