@@ -5,18 +5,16 @@
 using namespace std;
 
 // ----------------------------------------------------------------
-// 打包工具：將兩筆 (val, col) 打包成 128-bit word
-//   [127:96]=val1  [95:64]=col1  [63:32]=val0  [31:0]=col0
+// 打包工具：將單筆 (val, col) 打包成 42-bit word
+//   [41:10] = val   (32-bit)
+//   [ 9: 0] = col   (10-bit)
 // ----------------------------------------------------------------
-static packed_nnz_t pack_nnz(matType v0, int c0, matType v1, int c1) {
+static packed_nnz_t pack_nnz(matType v, int c) {
     packed_nnz_t w = 0;
-    ap_uint<32> raw0, raw1;
-    raw0 = v0.range(31, 0);
-    raw1 = v1.range(31, 0);
-    w.range( 63, 32) = raw0;
-    w.range( 31,  0) = (ap_uint<32>)c0;
-    w.range(127, 96) = raw1;
-    w.range( 95, 64) = (ap_uint<32>)c1;
+    ap_uint<VAL_BITS> raw;
+    raw = v.range(VAL_BITS - 1, 0);
+    w.range(COL_BITS + VAL_BITS - 1, COL_BITS) = raw;
+    w.range(COL_BITS - 1, 0) = (ap_uint<COL_BITS>)c;
     return w;
 }
 
@@ -53,52 +51,45 @@ void gemm_sw(T m1[R1][C1], T m2[C1][C2], T res[R1][C2]) {
 // ----------------------------------------------------------------
 template<typename T, int ROWS, int COLS>
 void rand_sp_fixed(T mat[ROWS][COLS], int nnz_per_row = SP_NNZ_PER_ROW) {
+    // 用 Fisher-Yates shuffle 確保每列選出不重複欄位
+    // 避免兩次 rand() 選到同一欄，導致實際 NNZ < SP_NNZ_PER_ROW
+    // 進而讓 kernel 讀空 stream 觸發 bus error
+    int cols_pool[COLS];
     for (int r = 0; r < ROWS; r++) {
-        for (int c = 0; c < COLS; c++) mat[r][c] = 0;
+        for (int c = 0; c < COLS; c++) {
+            mat[r][c]    = 0;
+            cols_pool[c] = c;
+        }
+        // shuffle 前 nnz_per_row 個位置，保證欄位不重複
         for (int k = 0; k < nnz_per_row; k++) {
-            int col = rand() % COLS;
-            mat[r][col] = (rand() % 20) + 1;
+            int swap_idx        = k + rand() % (COLS - k);
+            int tmp             = cols_pool[k];
+            cols_pool[k]        = cols_pool[swap_idx];
+            cols_pool[swap_idx] = tmp;
+            mat[r][cols_pool[k]] = (rand() % 20) + 1;
         }
     }
 }
 
 // ----------------------------------------------------------------
-// 稀疏矩陣 → CSR + packed NNZ
+// 稀疏矩陣 → CSR + packed NNZ（每筆 64-bit）
 // ----------------------------------------------------------------
 void mat2csr_packed(
     matType      sp_mat[SP_H][SP_W],
     ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset[SP_H + 1],
-    packed_nnz_t packed_nnz[NNZ_PAIRS])
+    packed_nnz_t packed_nnz[NNZ_WORDS])
 {
-    // 先收集所有 (val, col)
-    matType vals[SP_MAX_NNZ];
-    int     cols[SP_MAX_NNZ];
     int nnz = 0;
 
     row_offset[0] = 0;
     for (int r = 0; r < SP_H; r++) {
         for (int c = 0; c < SP_W; c++) {
             if (sp_mat[r][c] != 0) {
-                vals[nnz] = sp_mat[r][c];
-                cols[nnz] = c;
+                packed_nnz[nnz] = pack_nnz(sp_mat[r][c], c);
                 nnz++;
             }
         }
         row_offset[r + 1] = nnz;
-    }
-
-    // 兩兩打包
-    for (int p = 0; p < NNZ_PAIRS; p++) {
-        int i0 = p * 2;
-        int i1 = p * 2 + 1;
-        bool last_odd = (SP_MAX_NNZ % 2 != 0) && (p == NNZ_PAIRS - 1);
-
-        matType v0 = vals[i0];
-        int     c0 = cols[i0];
-        matType v1 = last_odd ? matType(0) : vals[i1];
-        int     c1 = last_odd ? 0          : cols[i1];
-
-        packed_nnz[p] = pack_nnz(v0, c0, v1, c1);
     }
 }
 
@@ -119,7 +110,7 @@ int main() {
 
     // 轉換為 CSR + packed NNZ
     ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset[SP_H + 1];
-    packed_nnz_t packed_nnz[NNZ_PAIRS];
+    packed_nnz_t packed_nnz[NNZ_WORDS];
     mat2csr_packed(sp_mat, row_offset, packed_nnz);
 
     // 軟體黃金值

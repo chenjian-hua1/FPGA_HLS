@@ -3,44 +3,30 @@
 // ================================================================
 // Stage 1 — load_nnz
 //
-//  讀取 128-bit packed word，拆出兩筆 (val, col_idx)
+//  讀取 64-bit packed word，拆出單筆 (val, col_idx)
 //  打包格式：
-//    [127:96]=val1  [95:64]=col1  [63:32]=val0  [31:0]=col0
+//    [COL_BITS+VAL_BITS-1:COL_BITS] = val
+//    [COL_BITS-1: 0] = col_idx
 //
-//  奇數 NNZ 時，最後一個 word 的高 64-bit 由呼叫端填 0，
-//  load_stage 設 valid1=false 通知下游不累加
+//  每個 NNZ 對應一個 64-bit word，共 NNZ_WORDS 個
 // ================================================================
 static void load_nnz(
-    packed_nnz_t             packed_nnz_ptr[NNZ_PAIRS],
-    hls::stream<nnz_pair_t> &st_nnz,
-    int                      total_nnz)
+    packed_nnz_t              packed_nnz_ptr[NNZ_WORDS],
+    hls::stream<nnz_elem_t>  &st_nnz,
+    int                       total_nnz)
 {
-    const int PAIRS   = (total_nnz + 1) / 2;
-    const bool IS_ODD = (total_nnz % 2 != 0);
-
-    load_nnz_loop: for (int p = 0; p < PAIRS; p++) {
+    load_nnz_loop: for (int i = 0; i < total_nnz; i++) {
     #pragma HLS PIPELINE II=1
-    #pragma HLS LOOP_TRIPCOUNT min=1 max=NNZ_PAIRS
+    #pragma HLS LOOP_TRIPCOUNT min=1 max=NNZ_WORDS
 
-        packed_nnz_t word = packed_nnz_ptr[p];
+        packed_nnz_t word = packed_nnz_ptr[i];
 
-        nnz_pair_t np;
-        // 低 64-bit → 第 0 筆
-        ap_uint<VAL_BITS> raw_val0 = word.range(63, 32);
-        np.val0 = raw_val0;
-        // np.col0 = word.range(31,  0).range(LOG2_CEIL(SP_W)-1, 0);
-        np.col0 = word.range(LOG2_CEIL(SP_W)-1, 0);
+        nnz_elem_t ne;
+        ap_uint<VAL_BITS> raw_val = word.range(COL_BITS + VAL_BITS - 1, COL_BITS);
+        ne.val = raw_val;
+        ne.col = word.range(COL_BITS - 1, 0);
 
-        // 高 64-bit → 第 1 筆
-        ap_uint<VAL_BITS> raw_val1 = word.range(127, 96);
-        np.val1 = raw_val1;
-        // np.col1 = word.range(95, 64).range(LOG2_CEIL(SP_W)-1, 0);
-        np.col1 = word.range(64+LOG2_CEIL(SP_W)-1, 64);
-
-        // 奇數 NNZ 的最後一對：第 1 筆無效
-        np.valid1 = !(IS_ODD && (p == PAIRS - 1));
-
-        st_nnz.write(np);
+        st_nnz.write(ne);
     }
 }
 
@@ -49,7 +35,6 @@ static void load_nnz(
 //
 //  將稠密矩陣 DATA 從 DRAM 搬入片上 BRAM/FF
 //  pipeline II=1，搬完後供 compute 隨機存取
-//  （data 需要隨機存取 col_idx 對應行，不適合用 stream）
 // ================================================================
 static void load_data(
     matType  data_ptr[DATA_H * DATA_W],
@@ -81,17 +66,17 @@ static void load_row_offset(
 // ================================================================
 // Stage 4 — compute
 //
-//  從 stream 依序接收 nnz_pair，根據 row_offset 判斷列歸屬
-//  對每個非零元素：累加 val * data[col][c]（對所有 DATA_W 列）
+//  從 stream 依序接收 nnz_elem，根據 row_offset 判斷列歸屬
+//  對每個非零元素：累加 val * data[col][c]（對所有 DATA_W 行）
 //
 //  設計重點：
 //    - localOut 按 dim=1（列）完全分割 → SP_H 個輸出可同時寫
-//    - 每 clock 處理兩筆 NNZ（一個 pair），兩筆可能在同列或跨列
+//    - 每 clock 處理一筆 NNZ
 //    - 用全域 nnz_counter 追蹤目前處理到第幾個 NNZ，
 //      配合 row_offset 判斷列邊界
 // ================================================================
 static void compute(
-    hls::stream<nnz_pair_t>         &st_nnz,
+    hls::stream<nnz_elem_t>         &st_nnz,
     matType                          data_local[DATA_H][DATA_W],
     ap_uint<LOG2_CEIL(SP_MAX_NNZ)>   row_offset[SP_H + 1],
     hls::stream<out_elem_t>         &st_out,
@@ -99,8 +84,8 @@ static void compute(
 {
     // 片上累加器，按列完全分割（SP_H 個獨立存取埠）
     matType localOut[SP_H][DATA_W];
-    #pragma HLS ARRAY_PARTITION variable=localOut dim=1 complete
-    #pragma HLS ARRAY_PARTITION variable=data_local dim=1 complete
+    #pragma HLS ARRAY_PARTITION variable=localOut    dim=1 complete
+    #pragma HLS ARRAY_PARTITION variable=data_local  dim=1 complete
 
     // 初始化
     init_r: for (int r = 0; r < SP_H; r++) {
@@ -112,8 +97,7 @@ static void compute(
     }
 
     // ----------------------------------------------------------
-    // 預建 nnz → row 反查表（compile-time 靜態展開）
-    // row_offset 在片上，查詢零延遲
+    // 預建 nnz → row 反查表
     // ----------------------------------------------------------
     int nnz_row[SP_MAX_NNZ];
     #pragma HLS ARRAY_PARTITION variable=nnz_row complete
@@ -128,34 +112,20 @@ static void compute(
     }
 
     // ----------------------------------------------------------
-    // 主累加迴圈：每 clock 處理一個 NNZ pair
-    // 每個 pair 對 DATA_W 所有行做 MAC
+    // 主累加迴圈：每 clock 處理一筆 NNZ
     // ----------------------------------------------------------
-    const int PAIRS = (total_nnz + 1) / 2;
-
-    mac_pairs: for (int p = 0; p < PAIRS; p++) {
+    mac_loop: for (int i = 0; i < total_nnz; i++) {
     #pragma HLS PIPELINE II=1
-    #pragma HLS LOOP_TRIPCOUNT min=1 max=NNZ_PAIRS
+    #pragma HLS LOOP_TRIPCOUNT min=1 max=NNZ_WORDS
 
-        nnz_pair_t np = st_nnz.read();
+        nnz_elem_t ne = st_nnz.read();
 
-        int row0 = nnz_row[p * 2];
-        int col0 = np.col0;
+        int row = nnz_row[i];
+        int col = ne.col;
 
-        // 第 0 筆 NNZ：對所有 DATA_W 行累加
-        mac_cols0: for (int c = 0; c < DATA_W; c++) {
+        mac_cols: for (int c = 0; c < DATA_W; c++) {
         #pragma HLS UNROLL
-            localOut[row0][c] += np.val0 * data_local[col0][c];
-        }
-
-        // 第 1 筆 NNZ（需 valid1）：對所有 DATA_W 行累加
-        if (np.valid1) {
-            int row1 = nnz_row[p * 2 + 1];
-            int col1 = np.col1;
-            mac_cols1: for (int c = 0; c < DATA_W; c++) {
-            #pragma HLS UNROLL
-                localOut[row1][c] += np.val1 * data_local[col1][c];
-            }
+            localOut[row][c] += ne.val * data_local[col][c];
         }
     }
 
@@ -192,22 +162,17 @@ static void store(
 
 // ================================================================
 // Top-level：DATAFLOW 串接所有 stage
-//
-//  注意：load_data 和 load_row_offset 不產生 stream，
-//        直接寫入片上陣列後供 compute 使用。
-//        DATAFLOW 仍然有效：load_nnz 與 load_data 同時進行，
-//        compute 一收到第一個 nnz_pair 就可以開始累加。
 // ================================================================
 void csr_gemm(
     matType      data_ptr[DATA_H * DATA_W],
     ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset_ptr[SP_H + 1],
-    packed_nnz_t packed_nnz_ptr[NNZ_PAIRS],
+    packed_nnz_t packed_nnz_ptr[NNZ_WORDS],
     matType      out_ptr[SP_H * DATA_W])
 {
 // --- AXI 介面：各 port 用不同 bundle 避免頻寬競爭 ---
 #pragma HLS INTERFACE m_axi port=data_ptr        bundle=gmem0 depth=DATA_H*DATA_W
 #pragma HLS INTERFACE m_axi port=row_offset_ptr  bundle=gmem1 depth=SP_H+1
-#pragma HLS INTERFACE m_axi port=packed_nnz_ptr  bundle=gmem2 depth=NNZ_PAIRS
+#pragma HLS INTERFACE m_axi port=packed_nnz_ptr  bundle=gmem2 depth=NNZ_WORDS
 #pragma HLS INTERFACE m_axi port=out_ptr         bundle=gmem3 depth=SP_H*DATA_W
 #pragma HLS INTERFACE s_axilite port=return      bundle=control
 
@@ -221,9 +186,9 @@ void csr_gemm(
     #pragma HLS ARRAY_PARTITION variable=row_offset_local complete
 
     // NNZ stream（load_nnz → compute）
-    hls::stream<nnz_pair_t>  st_nnz("st_nnz");
+    hls::stream<nnz_elem_t>  st_nnz("st_nnz");
     hls::stream<out_elem_t>  st_out("st_out");
-    #pragma HLS STREAM variable=st_nnz depth=NNZ_PAIRS
+    #pragma HLS STREAM variable=st_nnz depth=NNZ_WORDS
     #pragma HLS STREAM variable=st_out depth=SP_H*DATA_W
 
     const int total_nnz = SP_NNZ_PER_ROW * SP_H;  // 已知為固定值

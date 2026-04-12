@@ -38,32 +38,30 @@ typedef ap_int<32> matType;
 // ----------------------------------------------------------------
 // 寬位元 Package 設計
 //
-// 每個 packed word = 128-bit，打包一對 (value, col_idx)：
+// VAL_BITS：從 matType（ap_int<N>）的 ::width 靜態成員自動推算
+// COL_BITS：從 SP_W 透過 LOG2_CEIL 推算，足以索引所有行
 //
-//   [127:96] = values[2i+1]      (32-bit matType)
-//   [ 95:64] = col_indices[2i+1] (32-bit，zero-extended)
-//   [ 63:32] = values[2i]        (32-bit matType)
-//   [ 31: 0] = col_indices[2i]   (32-bit，zero-extended)
+// 每個 packed word = (VAL_BITS + COL_BITS)-bit，打包單筆 (value, col_idx)：
 //
-// SP_MAX_NNZ 為奇數時，最後一個 word 高 64-bit 填 0
+//   [VAL_BITS+COL_BITS-1 : COL_BITS] = value     (VAL_BITS-bit matType)
+//   [COL_BITS-1          :         0] = col_index (COL_BITS-bit)
+//
 // ----------------------------------------------------------------
-#define VAL_BITS       32
-#define COL_BITS       32                        // zero-extend col_idx 至 32-bit
-#define PACK_BITS      (2 * (VAL_BITS + COL_BITS))  // = 128
-typedef ap_uint<PACK_BITS> packed_nnz_t;         // 128-bit packed (val,col) pair
+constexpr int VAL_BITS  = matType::width;         // 與 matType 的位元寬同步
+constexpr int COL_BITS  = LOG2_CEIL(SP_W);       // 足以表示 [0, SP_W) 的最小位元數
+constexpr int PACK_BITS = VAL_BITS + COL_BITS;   // 實際使用位元數（例：32+3=35）
 
-// NNZ pair 數量（向上取整）
-#define NNZ_PAIRS      ((SP_MAX_NNZ + 1) / 2)
+typedef ap_uint<PACK_BITS> packed_nnz_t;
+
+// 每個 NNZ 一個 word，總數即 SP_MAX_NNZ
+#define NNZ_WORDS      SP_MAX_NNZ
 
 // ----------------------------------------------------------------
-// Stream payload：load → compute 傳遞一對 NNZ 元素
+// Stream payload：load → compute 傳遞單筆 NNZ 元素
 // ----------------------------------------------------------------
-struct nnz_pair_t {
-    matType                   val0;
-    ap_uint<LOG2_CEIL(SP_W)>  col0;
-    matType                   val1;
-    ap_uint<LOG2_CEIL(SP_W)>  col1;
-    bool                      valid1;  // 奇數 NNZ 最後一筆為 false
+struct nnz_elem_t {
+    matType                   val;
+    ap_uint<LOG2_CEIL(SP_W)>  col;
 };
 
 // compute → store 傳遞一個輸出元素
@@ -79,7 +77,7 @@ struct out_elem_t {
 void csr_gemm(
     matType      data_ptr[DATA_H * DATA_W],
     ap_uint<LOG2_CEIL(SP_MAX_NNZ)> row_offset_ptr[SP_H + 1],
-    packed_nnz_t packed_nnz_ptr[NNZ_PAIRS],      // ← 新增：packed (val,col) 輸入
+    packed_nnz_t packed_nnz_ptr[NNZ_WORDS],      // 64-bit/筆 packed (val, col) 輸入
     matType      out_ptr[SP_H * DATA_W]
 );
 
