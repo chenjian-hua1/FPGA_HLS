@@ -20,9 +20,12 @@ static void load_nnz(
         packed_nnz_t word = packed_nnz_ptr[i];
 
         nnz_elem_t ne;
-        ap_uint<VAL_BITS> raw_val = word.range(COL_BITS + VAL_BITS - 1, COL_BITS);
+        // ap_uint<VAL_BITS> raw_val = word.range(COL_BITS + VAL_BITS - 1, COL_BITS);
+        ap_uint<VAL_BITS> raw_val = word.range(COL_BITS + VAL_BITS-1, COL_BITS-1);
+
         ne.val = raw_val;
-        ne.col = word.range(COL_BITS - 1, 0);
+        // ne.col = word.range(COL_BITS - 1, 0);
+        ne.col = word.range(COL_BITS,0);
 
         st_nnz.write(ne);
     }
@@ -120,10 +123,16 @@ static void compute(
 
             // 一次讀取 packed word，同一 clock 取得 rs 與 re
             packed_ro_t word = ro_local[r];
-            int rs = (int)(ap_uint<RO_BITS>)word.range(RO_BITS - 1,         0);
-            int re = (int)(ap_uint<RO_BITS>)word.range(2 * RO_BITS - 1, RO_BITS);
 
-            if (rs <= i && i < re) nnz_row[i] = r;
+            // int rs = (int)(ap_uint<RO_BITS>)word.range(RO_BITS - 1,         0);
+            // int re = (int)(ap_uint<RO_BITS>)word.range(2 * RO_BITS - 1, RO_BITS);
+
+            // if (rs <= i && i < re) nnz_row[i] = r;
+
+            int rs = (int)(ap_uint<RO_BITS>)word.range(2*RO_BITS-1, RO_BITS);
+            int re = (int)(ap_uint<RO_BITS>)word.range(RO_BITS-1, 0);
+
+            nnz_row[i] = r;
         }
     }
 
@@ -136,13 +145,10 @@ static void compute(
 
         nnz_elem_t ne = st_nnz.read();
 
-        int row = nnz_row[i];
-        int col = ne.col;
+        // ----------------- TODO -------------------------------
 
-        mac_cols: for (int c = 0; c < DATA_W; c++) {
-        #pragma HLS UNROLL
-            localOut[row][c] += ne.val * data_local[col][c];
-        }
+
+
     }
 
     // ----------------------------------------------------------

@@ -122,20 +122,11 @@ void mat2csr_packed(
     int nnz = 0;
 
     row_offset[0] = 0;
-    for (int r = 0; r < SP_H; r++) {
-        for (int c = 0; c < SP_W; c++) {
-            if (sp_mat[r][c] != 0) {
-                packed_nnz[nnz] = pack_nnz(sp_mat[r][c], c);
-                nnz++;
-            }
-        }
-        row_offset[r + 1] = nnz;
-    }
+    
+    // ----------------- TODO -------------------------------
 
-    // 將相鄰兩個 row_offset 打包：packed_ro[r] = (offset[r], offset[r+1])
-    for (int r = 0; r < SP_H; r++) {
-        packed_ro[r] = pack_ro(row_offset[r], row_offset[r + 1]);
-    }
+
+    
 }
 
 // ================================================================
