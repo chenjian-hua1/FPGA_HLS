@@ -3,3 +3,4 @@
 **/*.dSYM
 **/build
 SparseMatrixFIFO/build/sparseMatTest
+DFT/dft
