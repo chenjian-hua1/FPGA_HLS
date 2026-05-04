@@ -14,33 +14,27 @@ https://github.com/kthohr/gcem/tree/master
 // ============================================================
 // 編譯期 sin/cos 查表（使用 gcem）
 // ============================================================
-
-constexpr std::size_t TABLE_SIZE = 256;
 constexpr double TWO_PI = 6.28318530717958647692;
 
-template <std::size_t N>
+template <int N>
 constexpr std::array<double, N> make_sin_table() {
     std::array<double, N> t{};
-    for (std::size_t i = 0; i < N; ++i) {
+    for (int i = 0; i < N; ++i) {
         double angle = TWO_PI * static_cast<double>(i) / static_cast<double>(N);
         t[i] = gcem::sin(angle);
     }
     return t;
 }
 
-template <std::size_t N>
+template <int N>
 constexpr std::array<double, N> make_cos_table() {
     std::array<double, N> t{};
-    for (std::size_t i = 0; i < N; ++i) {
+    for (int i = 0; i < N; ++i) {
         double angle = TWO_PI * static_cast<double>(i) / static_cast<double>(N);
         t[i] = gcem::cos(angle);
     }
     return t;
 }
-
-// 使用
-constexpr auto SIN_TABLE = make_sin_table<SIZE>();
-constexpr auto COS_TABLE = make_cos_table<SIZE>();
 
 
 // Calculate sum n times out data need how many bits
