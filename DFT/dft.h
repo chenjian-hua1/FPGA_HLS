@@ -4,29 +4,52 @@ https://github.com/bol-edu/2022-fall-ntu/tree/main
 https://github.com/kthohr/gcem/tree/master
 */
 
+#ifndef DFT_H
+#define DFT_H
+
 #include <hls_stream.h>
 #include <ap_fixed.h>
 #include <array>
 #include "table.h"
 
-
-// ============================================================
-// 編譯期 sin/cos
-// ============================================================
-// Calculate sum n times out data need how many bits
-template<int W, int I, int N>
-struct SumType {
-    static constexpr int log2_ceil(int n, int p = 0) {
-        return (1 << p) >= n ? p : log2_ceil(n, p + 1);
+constexpr int LOG2_CEIL(int x) {
+    // 定義域：x >= 1
+    // ceil(log2(1)) = 0, ceil(log2(2)) = 1, ceil(log2(3)) = 2, ...
+    int r = 0;
+    int p = 1;
+    // 直到 2^r 超過x
+    while (p < x) {
+        p*=2;
+        ++r;
     }
-    static constexpr int EXTRA = log2_ceil(N);
-    typedef ap_fixed<W + EXTRA, I + EXTRA> type;
-};
+    return r;
+}
 
-// data type
-typedef ap_fixed<16, 8> DTYPE;
+// TOTAL_BITS have one sign bit so -1   
+// 2^(TOTAL_BITS-1)**2 = 2^((TOTAL_BITS-1)*2)
+// add one sign bit
+constexpr int MULT_TOTAL_BITS = (TOTAL_BITS-1)*2+1;
+
+// depend bits of dec point  
+// if INT_BITS==1 (only decimal) : MULT_INT_BITS = 1 
+// else : MULT_INT_BITS = INT_BITS*2   ( 2^INT_BITS*2^INT_BITS = 2^(INT_BITS+INT_BITS) )
+constexpr int MULT_INT_BITS = (INT_BITS==1)?(1):(INT_BITS*2);
+
+// mult out data type
+typedef ap_fixed<MULT_TOTAL_BITS, MULT_INT_BITS> MULT_DTYPE; // 只有小數跟正負號
+
+// ((x1+x2) + (x3+x4)) + ... (x(n-1)+xn)
+// add 2^n times -> generate extra bits log2(n)
+constexpr int SUM_EXTRA_BITS = LOG2_CEIL(COEFF_SIZE);
+
+// data_bits+floor(log2(add_times))
+constexpr int SUM_TOTAL_BITS = MULT_TOTAL_BITS+SUM_EXTRA_BITS;
+
+// DATA_INT_BITS+log2(add_times)
+constexpr int SUM_INT_BITS = MULT_INT_BITS+SUM_EXTRA_BITS;
+
 // sum out data type
-typedef SumType<16, 8, COEFF_SIZE> SUM_DTYPE;
+typedef ap_fixed<SUM_TOTAL_BITS, SUM_INT_BITS> SUM_DTYPE;
 
 
 /**
@@ -54,3 +77,5 @@ typedef SumType<16, 8, COEFF_SIZE> SUM_DTYPE;
  *        by the caller (or accumulation will be incorrect).
  */
 void dft(DTYPE real_samples[COEFF_SIZE], DTYPE imag_samples[COEFF_SIZE], SUM_DTYPE real_outs[COEFF_SIZE], SUM_DTYPE imag_outs[COEFF_SIZE]);
+
+#endif // DFT_H

@@ -4,3 +4,4 @@
 **/build
 SparseMatrixFIFO/build/sparseMatTest
 DFT/dft
+DFT/dft_test
