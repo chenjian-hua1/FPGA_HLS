@@ -7,82 +7,12 @@ https://github.com/kthohr/gcem/tree/master
 #include <hls_stream.h>
 #include <ap_fixed.h>
 #include <array>
-
-#define SIZE 256
+#include "table.h"
 
 
 // ============================================================
-// 編譯期 sin/cos（精簡自 gcem 演算法）
+// 編譯期 sin/cos
 // ============================================================
-namespace const_trig {
-    constexpr double PI      = 3.14159265358979323846;
-    constexpr double TWO_PI  = 6.28318530717958647692;
-    constexpr double HALF_PI = 1.57079632679489661923;
-
-    constexpr double tan_cf(double z, int depth) noexcept {
-        double result = static_cast<double>(2 * depth - 1);
-        double zz = z * z;
-        for (int d = depth - 1; d >= 1; --d) {
-            result = static_cast<double>(2 * d - 1) - zz / result;
-        }
-        return z / result;
-    }
-
-    constexpr int tan_depth(double abs_x) noexcept {
-        return (abs_x > 1.4) ? 45 : (abs_x > 1.0) ? 35 : 25;
-    }
-
-    constexpr double sin(double x) noexcept {
-        while (x >  PI) x -= TWO_PI;
-        while (x < -PI) x += TWO_PI;
-        if (x == 0.0) return 0.0;
-        if (x ==  HALF_PI) return  1.0;
-        if (x == -HALF_PI) return -1.0;
-        if (x ==  PI || x == -PI) return 0.0;
-        double h = x / 2.0;
-        double absh = (h < 0) ? -h : h;
-        double t = tan_cf(h, tan_depth(absh));
-        return (2.0 * t) / (1.0 + t * t);
-    }
-
-    constexpr double cos(double x) noexcept {
-        while (x >  PI) x -= TWO_PI;
-        while (x < -PI) x += TWO_PI;
-        if (x == 0.0) return 1.0;
-        if (x ==  HALF_PI || x == -HALF_PI) return 0.0;
-        if (x ==  PI || x == -PI) return -1.0;
-        double h = x / 2.0;
-        double absh = (h < 0) ? -h : h;
-        double t = tan_cf(h, tan_depth(absh));
-        return (1.0 - t * t) / (1.0 + t * t);
-    }
-}
-
-// ============================================================
-// 編譯期建表
-// ============================================================
-template <int N>
-constexpr std::array<double, N> make_sin_table() {
-    std::array<double, N> t{};
-    for (int i = 0; i < N; ++i) {
-        t[i] = const_trig::sin(const_trig::TWO_PI * static_cast<double>(i)
-                                                  / static_cast<double>(N));
-    }
-    return t;
-}
-
-template <int N>
-constexpr std::array<double, N> make_cos_table() {
-    std::array<double, N> t{};
-    for (int i = 0; i < N; ++i) {
-        t[i] = const_trig::cos(const_trig::TWO_PI * static_cast<double>(i)
-                                                  / static_cast<double>(N));
-    }
-    return t;
-}
-
-
-
 // Calculate sum n times out data need how many bits
 template<int W, int I, int N>
 struct SumType {
@@ -96,7 +26,7 @@ struct SumType {
 // data type
 typedef ap_fixed<16, 8> DTYPE;
 // sum out data type
-typedef SumType<16, 8, SIZE>::type SUM_DTYPE;
+typedef SumType<16, 8, COEFF_SIZE> SUM_DTYPE;
 
 
 /**
@@ -123,4 +53,4 @@ typedef SumType<16, 8, SIZE>::type SUM_DTYPE;
  *        arrays. real_outs / imag_outs are expected to be zero-initialized
  *        by the caller (or accumulation will be incorrect).
  */
-void dft(DTYPE real_samples[SIZE], DTYPE imag_samples[SIZE], SUM_DTYPE real_outs[SIZE], SUM_DTYPE imag_outs[SIZE]);
+void dft(DTYPE real_samples[COEFF_SIZE], DTYPE imag_samples[COEFF_SIZE], SUM_DTYPE real_outs[COEFF_SIZE], SUM_DTYPE imag_outs[COEFF_SIZE]);
