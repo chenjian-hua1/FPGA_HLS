@@ -32,8 +32,8 @@ void dft(DTYPE real_samples[COEFF_SIZE],
     SUM_DTYPE local_im[COEFF_SIZE];
     #pragma HLS BIND_STORAGE variable=local_re type=RAM_2P impl=BRAM
     #pragma HLS BIND_STORAGE variable=local_im type=RAM_2P impl=BRAM
-    #pragma HLS ARRAY_PARTITION variable=local_re cyclic factor=UNROLL_FACTOR dim=1
-    #pragma HLS ARRAY_PARTITION variable=local_im cyclic factor=UNROLL_FACTOR dim=1
+    #pragma HLS ARRAY_PARTITION variable=local_re cyclic factor=1 dim=1
+    #pragma HLS ARRAY_PARTITION variable=local_im cyclic factor=1 dim=1
 
     // 同時把輸入 sample 也搬到本地，避免內迴圈每輪都走 AXI
     DTYPE local_re_in[COEFF_SIZE];
@@ -42,28 +42,31 @@ void dft(DTYPE real_samples[COEFF_SIZE],
     #pragma HLS BIND_STORAGE variable=local_im_in type=RAM_1P impl=BRAM
 
     // ---------- 1. 從 m_axi 讀進輸入（burst）----------
-    load_input_loop: for (int n = 0; n < COEFF_SIZE; n++) {
+    load_input_loop: for (ap_uint<LOG2_CEIL(COEFF_SIZE+1)> n = 0; n < COEFF_SIZE; n++) {
+    // log2(COEFF_SIZE) 只能表示 0 ~ COEFF_SIZE-1
+    // load_input_loop: for (ap_uint<LOG2_CEIL(COEFF_SIZE> n = 0; n < COEFF_SIZE; n++)
         #pragma HLS PIPELINE II=1
+        
         local_re_in[n] = real_samples[n];
         local_im_in[n] = imag_samples[n];
     }
 
     // ---------- 2. 累加器清零 ----------
-    init_out_loop: for (int k = 0; k < COEFF_SIZE; k++) {
+    init_out_loop: for (ap_uint<LOG2_CEIL(COEFF_SIZE+1)> k = 0; k < COEFF_SIZE; k++) {
         #pragma HLS PIPELINE II=1
         local_re[k] = 0;
         local_im[k] = 0;
     }
 
     // ---------- 3. 主計算迴圈 ----------
-    outer_n_loop: for (int n = 0; n < COEFF_SIZE; n++) {
+    outer_n_loop: for (ap_uint<LOG2_CEIL(COEFF_SIZE+1)> n = 0; n < COEFF_SIZE; n++) {
         DTYPE real = local_re_in[n];
         DTYPE imag = local_im_in[n];
 
-        inner_k_loop: for (int k = 0; k < COEFF_SIZE; k++) {
-            #pragma HLS PIPELINE II=1
+        inner_k_loop: for (ap_uint<LOG2_CEIL(COEFF_SIZE+1)> k = 0; k < COEFF_SIZE; k++) {
+            #pragma HLS PIPELINE II=4
 
-            int index = (k * n) & (COEFF_SIZE - 1);  // = (k*n) % COEFF_SIZE
+            ap_uint<LOG2_CEIL(COEFF_SIZE)> index = (k * n) & (COEFF_SIZE - 1);  // = (k*n) % COEFF_SIZE
 
             DTYPE c = COS_TABLE[index];
             DTYPE s = SIN_TABLE[index];
@@ -79,7 +82,7 @@ void dft(DTYPE real_samples[COEFF_SIZE],
     }
 
     // ---------- 4. 寫回 m_axi（burst）----------
-    write_back_loop: for (int k = 0; k < COEFF_SIZE; k++) {
+    write_back_loop: for (ap_uint<LOG2_CEIL(COEFF_SIZE+1)> k = 0; k < COEFF_SIZE; k++) {
         #pragma HLS PIPELINE II=1
         real_outs[k] = local_re[k];
         imag_outs[k] = local_im[k];
