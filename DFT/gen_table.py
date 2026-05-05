@@ -11,10 +11,10 @@ so that any phase 2*pi*k*n/N in the DFT formula can be obtained by
 indexing the table at (k*n) mod N.
 
 Usage examples:
-    python gen_coefficients.py                       # default: N=256, float
-    python gen_coefficients.py --size 1024           # N=1024
-    python gen_coefficients.py --size 256 --dtype double
-    python gen_coefficients.py --size 256 --output coefficients256.h
+    python gen_table.py                       # default: N=256, float
+    python gen_table.py --size 1024           # N=1024
+    python gen_table.py --size 256 --dtype double
+    python gen_table.py --size 256 --output coefficients256.h
 """
 
 import argparse
