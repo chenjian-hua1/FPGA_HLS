@@ -1,24 +1,21 @@
 /*
  * main.c : DFT HLS IP test application (Vitis / Bare-metal)
  *
- * 對應 HLS 端設定（來自 table.h / dft.h）：
- *   COEFF_SIZE      = 256
- *   DTYPE           = ap_fixed<16, 2>     -> Q2.14 ，PS 端用 int16_t
- *   SUM_DTYPE       = ap_fixed<39, 12>    -> Q12.27，PS 端用 int64_t
+ * 對應 HLS 端設定：
+ *   COEFF_SIZE = 256
+ *   DTYPE      = ap_fixed<16, 2>   -> Q2.14 ，PS 端用 int16_t
+ *   SUM_DTYPE  = ap_fixed<39, 12>  -> Q12.27，PS 端用 int64_t
  *
- * HLS IP 介面：m_axi master
- *   driver 的 Set_*_samples / Set_*_outs 傳入「實體記憶體位址」
- *   IP 透過 AXI 主動讀寫 DDR
+ * ★ 關鍵：ap_fixed<39, 12> 在 m_axi 上會被 pack 到 64-bit element
+ *   但 IP 只寫 bit 0~38，bit 39~63 不會被觸碰（維持 buffer 原值，通常是 0）
+ *   所以 PS 端讀回後必須對「bit 38」做 sign extension，才能還原負數
  *
- * Cache 處理：
- *   採用最簡單的「關閉 D-Cache」做法。如果你想保留 cache 提高效能，
- *   就改用 Xil_DCacheFlushRange(輸入位址, 大小) / InvalidateRange(輸出位址, 大小)。
+ * 不依賴 libm（不需要 -lm）：cos/sin 直接用整數表，sqrt 用整數 Newton 法
  */
 
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <math.h>
 #include <string.h>
 
 #include "platform.h"
@@ -27,131 +24,227 @@
 #include "xparameters.h"
 #include "xdft.h"
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 /* ============================================================
- *  IP 參數（必須與 HLS 端 dft.h / table.h 完全一致）
+ *  IP 參數
  * ============================================================ */
 #define COEFF_SIZE      256
 
-/* DTYPE = ap_fixed<16, 2>  -> Q2.14 */
 #define TOTAL_BITS      16
 #define INT_BITS        2
 #define DEC_BITS        (TOTAL_BITS - INT_BITS)   /* = 14 */
+#define ONE_Q14         (1 << DEC_BITS)           /* = 16384 */
 
-/* SUM_DTYPE = ap_fixed<MULT_TOTAL_BITS + log2(N), MULT_INT_BITS + log2(N)>
- *           = ap_fixed<31 + 8, 4 + 8>
- *           = ap_fixed<39, 12>  -> Q12.27
- * 在 m_axi 上會被 pack 成 64-bit element，因此 PS 端用 int64_t 陣列。
- */
-#define MULT_TOTAL_BITS ((TOTAL_BITS - 1) * 2 + 1)        /* = 31 */
-#define MULT_INT_BITS   (INT_BITS * 2)                    /* = 4  */
-#define SUM_EXTRA_BITS  8                                 /* log2(256) */
-#define SUM_TOTAL_BITS  (MULT_TOTAL_BITS + SUM_EXTRA_BITS)/* = 39 */
-#define SUM_INT_BITS    (MULT_INT_BITS   + SUM_EXTRA_BITS)/* = 12 */
-#define SUM_DEC_BITS    (SUM_TOTAL_BITS  - SUM_INT_BITS)  /* = 27 */
+#define MULT_TOTAL_BITS ((TOTAL_BITS - 1) * 2 + 1)         /* = 31 */
+#define MULT_INT_BITS   (INT_BITS * 2)                     /* = 4  */
+#define SUM_EXTRA_BITS  8                                  /* log2(256) */
+#define SUM_TOTAL_BITS  (MULT_TOTAL_BITS + SUM_EXTRA_BITS) /* = 39 */
+#define SUM_INT_BITS    (MULT_INT_BITS   + SUM_EXTRA_BITS) /* = 12 */
+#define SUM_DEC_BITS    (SUM_TOTAL_BITS  - SUM_INT_BITS)   /* = 27 */
 
-/* PS 端定點型別 */
-typedef int16_t DTYPE_T;        /* 存 Q2.14         */
-typedef int64_t SUM_DTYPE_T;    /* 存 Q12.27 (39b 用 64b 容納) */
+typedef int16_t DTYPE_T;
+typedef int64_t SUM_DTYPE_T;
 
-/* float <-> 定點 轉換 */
-static inline DTYPE_T float_to_dtype(float v)
+/* ============================================================
+ *  ★★★ 關鍵修正：39-bit sign extension ★★★
+ *
+ *  ap_fixed<39,12> 在 m_axi 上被 pack 到 64-bit slot：
+ *    bit 0~38  = 有效資料（39-bit 兩補數）
+ *    bit 39~63 = IP 不寫，維持 buffer 原值
+ *
+ *  PS 寫入時若初始化為 0，bit 39~63 會是 0。
+ *  IP 寫入負數時（bit 38=1），PS 讀回會誤以為是「巨大正數」。
+ *  必須手動把 bit 38 廣播到 bit 39~63 來還原 64-bit signed 表示。
+ * ============================================================ */
+static inline int64_t sign_extend_39(int64_t v)
 {
-    /* Q2.14：範圍 [-2, 2)，飽和處理 */
-    float scaled = v * (float)(1 << DEC_BITS);
-    if (scaled >  32767.0f) scaled =  32767.0f;
-    if (scaled < -32768.0f) scaled = -32768.0f;
-    return (DTYPE_T)(scaled >= 0 ? (scaled + 0.5f) : (scaled - 0.5f));
+    const int64_t MASK39  = ((int64_t)1 << SUM_TOTAL_BITS) - 1;     /* bit 0~38 */
+    const int64_t SIGNBIT = (int64_t)1 << (SUM_TOTAL_BITS - 1);     /* bit 38 */
+    int64_t x = v & MASK39;
+    if (x & SIGNBIT) {
+        x |= ~MASK39;   /* 高位填 1 */
+    }
+    return x;
 }
 
-static inline float sum_dtype_to_float(SUM_DTYPE_T v)
+/* ============================================================
+ *  cos/sin Q2.14 整數表（與 HLS table.h 對齊）
+ * ============================================================ */
+static const int16_t COS_TABLE_INT[COEFF_SIZE] = {
+    16383,16379,16364,16340,16305,16261,16207,16143,
+    16069,15986,15893,15791,15679,15557,15426,15286,
+    15137,14979,14811,14635,14449,14256,14053,13842,
+    13623,13395,13160,12916,12665,12406,12140,11866,
+    11585,11297,11003,10702,10394,10080, 9760, 9434,
+     9102, 8765, 8423, 8076, 7723, 7366, 7005, 6639,
+     6270, 5897, 5520, 5139, 4756, 4370, 3981, 3590,
+     3196, 2801, 2404, 2006, 1606, 1205,  804,  402,
+        0, -402, -804,-1205,-1606,-2006,-2404,-2801,
+    -3196,-3590,-3981,-4370,-4756,-5139,-5520,-5897,
+    -6270,-6639,-7005,-7366,-7723,-8076,-8423,-8765,
+    -9102,-9434,-9760,-10080,-10394,-10702,-11003,-11297,
+   -11585,-11866,-12140,-12406,-12665,-12916,-13160,-13395,
+   -13623,-13842,-14053,-14256,-14449,-14635,-14811,-14979,
+   -15137,-15286,-15426,-15557,-15679,-15791,-15893,-15986,
+   -16069,-16143,-16207,-16261,-16305,-16340,-16364,-16379,
+   -16383,-16379,-16364,-16340,-16305,-16261,-16207,-16143,
+   -16069,-15986,-15893,-15791,-15679,-15557,-15426,-15286,
+   -15137,-14979,-14811,-14635,-14449,-14256,-14053,-13842,
+   -13623,-13395,-13160,-12916,-12665,-12406,-12140,-11866,
+   -11585,-11297,-11003,-10702,-10394,-10080, -9760, -9434,
+    -9102, -8765, -8423, -8076, -7723, -7366, -7005, -6639,
+    -6270, -5897, -5520, -5139, -4756, -4370, -3981, -3590,
+    -3196, -2801, -2404, -2006, -1606, -1205,  -804,  -402,
+        0,   402,   804,  1205,  1606,  2006,  2404,  2801,
+     3196,  3590,  3981,  4370,  4756,  5139,  5520,  5897,
+     6270,  6639,  7005,  7366,  7723,  8076,  8423,  8765,
+     9102,  9434,  9760, 10080, 10394, 10702, 11003, 11297,
+    11585, 11866, 12140, 12406, 12665, 12916, 13160, 13395,
+    13623, 13842, 14053, 14256, 14449, 14635, 14811, 14979,
+    15137, 15286, 15426, 15557, 15679, 15791, 15893, 15986,
+    16069, 16143, 16207, 16261, 16305, 16340, 16364, 16379
+};
+
+static const int16_t SIN_TABLE_INT[COEFF_SIZE] = {
+        0,  402,  804, 1205, 1606, 2006, 2404, 2801,
+     3196, 3590, 3981, 4370, 4756, 5139, 5520, 5897,
+     6270, 6639, 7005, 7366, 7723, 8076, 8423, 8765,
+     9102, 9434, 9760,10080,10394,10702,11003,11297,
+    11585,11866,12140,12406,12665,12916,13160,13395,
+    13623,13842,14053,14256,14449,14635,14811,14979,
+    15137,15286,15426,15557,15679,15791,15893,15986,
+    16069,16143,16207,16261,16305,16340,16364,16379,
+    16383,16379,16364,16340,16305,16261,16207,16143,
+    16069,15986,15893,15791,15679,15557,15426,15286,
+    15137,14979,14811,14635,14449,14256,14053,13842,
+    13623,13395,13160,12916,12665,12406,12140,11866,
+    11585,11297,11003,10702,10394,10080, 9760, 9434,
+     9102, 8765, 8423, 8076, 7723, 7366, 7005, 6639,
+     6270, 5897, 5520, 5139, 4756, 4370, 3981, 3590,
+     3196, 2801, 2404, 2006, 1606, 1205,  804,  402,
+        0, -402, -804,-1205,-1606,-2006,-2404,-2801,
+    -3196,-3590,-3981,-4370,-4756,-5139,-5520,-5897,
+    -6270,-6639,-7005,-7366,-7723,-8076,-8423,-8765,
+    -9102,-9434,-9760,-10080,-10394,-10702,-11003,-11297,
+   -11585,-11866,-12140,-12406,-12665,-12916,-13160,-13395,
+   -13623,-13842,-14053,-14256,-14449,-14635,-14811,-14979,
+   -15137,-15286,-15426,-15557,-15679,-15791,-15893,-15986,
+   -16069,-16143,-16207,-16261,-16305,-16340,-16364,-16379,
+   -16383,-16379,-16364,-16340,-16305,-16261,-16207,-16143,
+   -16069,-15986,-15893,-15791,-15679,-15557,-15426,-15286,
+   -15137,-14979,-14811,-14635,-14449,-14256,-14053,-13842,
+   -13623,-13395,-13160,-12916,-12665,-12406,-12140,-11866,
+   -11585,-11297,-11003,-10702,-10394,-10080, -9760, -9434,
+    -9102, -8765, -8423, -8076, -7723, -7366, -7005, -6639,
+    -6270, -5897, -5520, -5139, -4756, -4370, -3981, -3590,
+    -3196, -2801, -2404, -2006, -1606, -1205,  -804,  -402
+};
+
+/* ============================================================
+ *  整數開根號（floor sqrt）
+ * ============================================================ */
+static uint64_t isqrt_u64(uint64_t x)
 {
-    /* Q12.27 -> float：除以 2^27 */
-    return (float)((double)v / (double)(1LL << SUM_DEC_BITS));
+    uint64_t r, t;
+    if (x < 2) return x;
+    r = 1; t = x;
+    while (t > 1) { t >>= 2; r <<= 1; }
+    for (;;) {
+        uint64_t nr = (r + x / r) >> 1;
+        if (nr >= r) return r;
+        r = nr;
+    }
 }
 
 /* ============================================================
  *  輸入 / 輸出緩衝區
- *  - HLS IP 透過 m_axi 直接存取，必須是合法位址
- *  - 64-byte 對齊有助於 AXI burst 效能（非必要，但建議）
- *  - 已關閉 D-Cache，PS 寫入後 PL 可立即看到
  * ============================================================ */
 static DTYPE_T     real_in [COEFF_SIZE] __attribute__((aligned(64)));
 static DTYPE_T     imag_in [COEFF_SIZE] __attribute__((aligned(64)));
 static SUM_DTYPE_T real_out[COEFF_SIZE] __attribute__((aligned(64)));
 static SUM_DTYPE_T imag_out[COEFF_SIZE] __attribute__((aligned(64)));
 
-/* float 參考 DFT 用 */
-static float real_f [COEFF_SIZE];
-static float imag_f [COEFF_SIZE];
-static float ref_re [COEFF_SIZE];
-static float ref_im [COEFF_SIZE];
+static int32_t real_in_q14 [COEFF_SIZE];
+static int32_t imag_in_q14 [COEFF_SIZE];
+static int64_t ref_re_q27  [COEFF_SIZE];
+static int64_t ref_im_q27  [COEFF_SIZE];
 
-/* IP 實例 */
 static XDft Dft;
 
 /* ============================================================
- *  Float 參考 DFT（與 HLS 公式一致）
- *    real_outs[k] += real*cos + imag*sin
- *    imag_outs[k] += imag*cos - real*sin
+ *  整數參考 DFT，輸出 Q12.27
  * ============================================================ */
-static void dft_float_ref(const float real_samples[COEFF_SIZE],
-                          const float imag_samples[COEFF_SIZE],
-                          float real_outs[COEFF_SIZE],
-                          float imag_outs[COEFF_SIZE])
+static void dft_int_ref(const int32_t real_samples[COEFF_SIZE],
+                        const int32_t imag_samples[COEFF_SIZE],
+                        int64_t real_outs[COEFF_SIZE],
+                        int64_t imag_outs[COEFF_SIZE])
 {
-    static float cos_tbl[COEFF_SIZE];
-    static float sin_tbl[COEFF_SIZE];
-    static int initialized = 0;
-    int i, k, n;
-
-    if (!initialized) {
-        for (i = 0; i < COEFF_SIZE; i++) {
-            double theta = 2.0 * M_PI * (double)i / (double)COEFF_SIZE;
-            cos_tbl[i] = (float)cos(theta);
-            sin_tbl[i] = (float)sin(theta);
-        }
-        initialized = 1;
-    }
-
+    int k, n;
     for (k = 0; k < COEFF_SIZE; k++) {
-        real_outs[k] = 0.0f;
-        imag_outs[k] = 0.0f;
+        real_outs[k] = 0;
+        imag_outs[k] = 0;
     }
-
     for (n = 0; n < COEFF_SIZE; n++) {
-        float r  = real_samples[n];
-        float im = imag_samples[n];
+        int32_t r  = real_samples[n];
+        int32_t im = imag_samples[n];
         for (k = 0; k < COEFF_SIZE; k++) {
-            int index = (k * n) & (COEFF_SIZE - 1);
-            float c = cos_tbl[index];
-            float s = sin_tbl[index];
-            real_outs[k] += (r  * c + im * s);
-            imag_outs[k] += (im * c - r  * s);
+            int idx = (k * n) & (COEFF_SIZE - 1);
+            int32_t c = COS_TABLE_INT[idx];
+            int32_t s = SIN_TABLE_INT[idx];
+            int64_t pr = (int64_t)r  * c + (int64_t)im * s;  /* Q4.28 */
+            int64_t pi = (int64_t)im * c - (int64_t)r  * s;
+            real_outs[k] += pr;
+            imag_outs[k] += pi;
         }
+    }
+    /* Q4.28 -> Q12.27 (右移 1) */
+    for (k = 0; k < COEFF_SIZE; k++) {
+        real_outs[k] = real_outs[k] / 2;
+        imag_outs[k] = imag_outs[k] / 2;
     }
 }
 
 /* ============================================================
  *  訊號產生
  * ============================================================ */
-static void gen_signal_sine(int freq_bin, float amplitude)
+static void gen_signal_sine(int freq_bin, int amp_q14)
 {
     int n;
     for (n = 0; n < COEFF_SIZE; n++) {
-        double v = (double)amplitude *
-                   cos(2.0 * M_PI * (double)freq_bin * (double)n / (double)COEFF_SIZE);
-        real_f [n] = (float)v;
-        imag_f [n] = 0.0f;
-        real_in[n] = float_to_dtype((float)v);
-        imag_in[n] = 0;
+        int idx = (freq_bin * n) & (COEFF_SIZE - 1);
+        int64_t v = ((int64_t)amp_q14 * (int64_t)COS_TABLE_INT[idx]) >> DEC_BITS;
+        if (v >  32767) v =  32767;
+        if (v < -32768) v = -32768;
+        real_in[n]     = (DTYPE_T)v;
+        imag_in[n]     = 0;
+        real_in_q14[n] = (int32_t)v;
+        imag_in_q14[n] = 0;
     }
 }
 
-/* 簡單 LCG：固定 seed 結果可重現，不依賴 stdlib rand 的實作差異 */
+static void gen_signal_dc(int value_q14)
+{
+    int n;
+    for (n = 0; n < COEFF_SIZE; n++) {
+        real_in[n]     = (DTYPE_T)value_q14;
+        imag_in[n]     = 0;
+        real_in_q14[n] = value_q14;
+        imag_in_q14[n] = 0;
+    }
+}
+
+static void gen_signal_impulse(int value_q14)
+{
+    int n;
+    for (n = 0; n < COEFF_SIZE; n++) {
+        real_in[n]     = 0;
+        imag_in[n]     = 0;
+        real_in_q14[n] = 0;
+        imag_in_q14[n] = 0;
+    }
+    real_in[0]     = (DTYPE_T)value_q14;
+    real_in_q14[0] = value_q14;
+}
+
 static uint32_t g_rand_state = 42;
 static void my_srand(uint32_t s) { g_rand_state = s; }
 static uint32_t my_rand(void)
@@ -159,158 +252,129 @@ static uint32_t my_rand(void)
     g_rand_state = g_rand_state * 1103515245u + 12345u;
     return (g_rand_state >> 1) & 0x7FFFFFFF;
 }
-#define MY_RAND_MAX 0x7FFFFFFF
 
-static void gen_signal_random(float range)
+static void gen_signal_random(int range_q14)
 {
     int n;
+    int span = 2 * range_q14;
     for (n = 0; n < COEFF_SIZE; n++) {
-        float r = ((float)my_rand() / (float)MY_RAND_MAX * 2.0f - 1.0f) * range;
-        float i = ((float)my_rand() / (float)MY_RAND_MAX * 2.0f - 1.0f) * range;
-        real_f [n] = r;
-        imag_f [n] = i;
-        real_in[n] = float_to_dtype(r);
-        imag_in[n] = float_to_dtype(i);
+        int r = (int)(my_rand() % (uint32_t)span) - range_q14;
+        int i = (int)(my_rand() % (uint32_t)span) - range_q14;
+        real_in[n]     = (DTYPE_T)r;
+        imag_in[n]     = (DTYPE_T)i;
+        real_in_q14[n] = r;
+        imag_in_q14[n] = i;
     }
-}
-
-static void gen_signal_dc(float value)
-{
-    int n;
-    for (n = 0; n < COEFF_SIZE; n++) {
-        real_f [n] = value;
-        imag_f [n] = 0.0f;
-        real_in[n] = float_to_dtype(value);
-        imag_in[n] = 0;
-    }
-}
-
-static void gen_signal_impulse(float value)
-{
-    int n;
-    for (n = 0; n < COEFF_SIZE; n++) {
-        real_f [n] = 0.0f;
-        imag_f [n] = 0.0f;
-        real_in[n] = 0;
-        imag_in[n] = 0;
-    }
-    real_f [0] = value;
-    real_in[0] = float_to_dtype(value);
 }
 
 /* ============================================================
- *  IP 控制：設位址 -> Start -> 等 Done
+ *  IP 控制
  * ============================================================ */
 static void run_dft_on_ip(void)
 {
     int k;
-
-    /* 清空輸出 buffer（IP 是累加，必須先歸零） */
     for (k = 0; k < COEFF_SIZE; k++) {
         real_out[k] = 0;
         imag_out[k] = 0;
     }
-
-    /* 把陣列實體位址傳給 IP（m_axi 介面） */
     XDft_Set_real_samples(&Dft, (u64)(UINTPTR)real_in);
     XDft_Set_imag_samples(&Dft, (u64)(UINTPTR)imag_in);
     XDft_Set_real_outs   (&Dft, (u64)(UINTPTR)real_out);
     XDft_Set_imag_outs   (&Dft, (u64)(UINTPTR)imag_out);
-
-    /* 啟動 IP */
     XDft_Start(&Dft);
-
-    /* Polling 等待完成 */
-    while (!XDft_IsDone(&Dft)) {
-        /* busy wait */
-    }
-
-    /* 清中斷旗標 */
+    while (!XDft_IsDone(&Dft)) { /* busy wait */ }
     XDft_InterruptClear(&Dft, 1);
 }
 
 /* ============================================================
- *  比較 IP 結果與 float 參考
+ *  比較（讀取 IP 結果時做 39-bit sign extension）
  * ============================================================ */
 typedef struct {
-    double max_abs_err;
-    double rmse;
-    int    max_err_index;
+    int64_t  max_err_q27;
+    int64_t  rmse_q27;
+    int      max_err_index;
 } ErrorStats;
 
 static ErrorStats compare_results(const SUM_DTYPE_T fx_re[COEFF_SIZE],
                                   const SUM_DTYPE_T fx_im[COEFF_SIZE],
-                                  const float ref_re_[COEFF_SIZE],
-                                  const float ref_im_[COEFF_SIZE])
+                                  const int64_t     ref_re_[COEFF_SIZE],
+                                  const int64_t     ref_im_[COEFF_SIZE])
 {
     ErrorStats st;
-    double sum_sq = 0.0;
+    const int SHIFT = 8;
+    uint64_t sum_sq = 0;
     int k;
 
-    st.max_abs_err   = 0.0;
-    st.rmse          = 0.0;
+    st.max_err_q27   = 0;
+    st.rmse_q27      = 0;
     st.max_err_index = -1;
 
     for (k = 0; k < COEFF_SIZE; k++) {
-        double er = (double)sum_dtype_to_float(fx_re[k]) - (double)ref_re_[k];
-        double ei = (double)sum_dtype_to_float(fx_im[k]) - (double)ref_im_[k];
-        double mag = sqrt(er * er + ei * ei);
-        if (mag > st.max_abs_err) {
-            st.max_abs_err   = mag;
+        /* ★ sign extension：把 IP 寫入的 39-bit 值還原成正確的 64-bit signed */
+        int64_t ip_re = sign_extend_39((int64_t)fx_re[k]);
+        int64_t ip_im = sign_extend_39((int64_t)fx_im[k]);
+
+        int64_t er = ip_re - ref_re_[k];
+        int64_t ei = ip_im - ref_im_[k];
+
+        /* 縮小避免 (er^2 + ei^2) 溢位 int64 */
+        int64_t er_s = er >> SHIFT;
+        int64_t ei_s = ei >> SHIFT;
+        uint64_t sq = (uint64_t)(er_s * er_s + ei_s * ei_s);
+        sum_sq += sq;
+
+        uint64_t mag_sq_s = (uint64_t)(er_s * er_s + ei_s * ei_s);
+        uint64_t mag_s    = isqrt_u64(mag_sq_s);
+        int64_t  mag      = (int64_t)mag_s << SHIFT;
+        if (mag > st.max_err_q27) {
+            st.max_err_q27   = mag;
             st.max_err_index = k;
         }
-        sum_sq += er * er + ei * ei;
     }
-    st.rmse = sqrt(sum_sq / (double)COEFF_SIZE);
+    {
+        uint64_t mean = sum_sq / COEFF_SIZE;
+        uint64_t rmse_scaled = isqrt_u64(mean);
+        st.rmse_q27 = (int64_t)(rmse_scaled << SHIFT);
+    }
     return st;
 }
 
-/* xil_printf 不支援 %f：把 double 拆成符號 + 整數 + 4 位小數 */
-static void split_float(double v, int *sign, int *int_part, int *frac4)
+/* ============================================================
+ *  Q12.27 -> 顯示
+ * ============================================================ */
+static void print_q27(int64_t v)
 {
-    double a;
-    *sign = (v < 0.0) ? -1 : 1;
-    a = (v < 0.0) ? -v : v;
-    *int_part = (int)a;
-    *frac4    = (int)((a - (double)(*int_part)) * 10000.0 + 0.5);
-    if (*frac4 >= 10000) {  /* 進位修正 */
-        *frac4 = 0;
-        (*int_part)++;
-    }
-}
-
-static void print_float(double v)
-{
-    int sign, ip, fp;
-    split_float(v, &sign, &ip, &fp);
-    if (sign < 0) xil_printf("-%d.%04d", ip, fp);
-    else          xil_printf( "%d.%04d", ip, fp);
+    int neg = (v < 0);
+    uint64_t a = neg ? (uint64_t)(-v) : (uint64_t)v;
+    uint64_t int_part  = a >> SUM_DEC_BITS;
+    uint64_t frac_part = a & (((uint64_t)1 << SUM_DEC_BITS) - 1);
+    uint64_t frac4 = (frac_part * 10000ULL) >> SUM_DEC_BITS;
+    if (neg && (int_part != 0 || frac4 != 0))
+        xil_printf("-%u.%04u", (unsigned)int_part, (unsigned)frac4);
+    else
+        xil_printf( "%u.%04u", (unsigned)int_part, (unsigned)frac4);
 }
 
 /* ============================================================
  *  單個測試
  * ============================================================ */
-static int run_one_test(const char *name, double tolerance, int dump)
+static int run_one_test(const char *name, int64_t tol_q27, int dump)
 {
     ErrorStats st;
     int pass;
 
-    /* 跑 IP */
     run_dft_on_ip();
+    dft_int_ref(real_in_q14, imag_in_q14, ref_re_q27, ref_im_q27);
 
-    /* 跑 float 參考 */
-    dft_float_ref(real_f, imag_f, ref_re, ref_im);
-
-    /* 比較 */
-    st = compare_results(real_out, imag_out, ref_re, ref_im);
-    pass = (st.max_abs_err <= tolerance);
+    st = compare_results(real_out, imag_out, ref_re_q27, ref_im_q27);
+    pass = (st.max_err_q27 <= tol_q27);
 
     xil_printf("[%s] max_err=", name);
-    print_float(st.max_abs_err);
+    print_q27(st.max_err_q27);
     xil_printf(" (k=%d), RMSE=", st.max_err_index);
-    print_float(st.rmse);
+    print_q27(st.rmse_q27);
     xil_printf(", tol=");
-    print_float(tolerance);
+    print_q27(tol_q27);
     xil_printf("  %s\r\n", pass ? "PASS" : "FAIL");
 
     if (dump) {
@@ -318,14 +382,16 @@ static int run_one_test(const char *name, double tolerance, int dump)
         int k;
         xil_printf("    k |    ip_real      ip_imag    |   ref_real     ref_imag\r\n");
         for (k = 0; k < n_dump; k++) {
+            int64_t ip_re = sign_extend_39((int64_t)real_out[k]);
+            int64_t ip_im = sign_extend_39((int64_t)imag_out[k]);
             xil_printf("  %3d | ", k);
-            print_float((double)sum_dtype_to_float(real_out[k]));
+            print_q27(ip_re);
             xil_printf("   ");
-            print_float((double)sum_dtype_to_float(imag_out[k]));
+            print_q27(ip_im);
             xil_printf("  | ");
-            print_float((double)ref_re[k]);
+            print_q27(ref_re_q27[k]);
             xil_printf("   ");
-            print_float((double)ref_im[k]);
+            print_q27(ref_im_q27[k]);
             xil_printf("\r\n");
         }
     }
@@ -340,19 +406,15 @@ int main(void)
     int Status;
     int pass = 0, total = 0;
     int t;
-    double tol;
+    int64_t tol_q27;
     XDft_Config *CfgPtr;
 
-    /* 1. 平台初始化 */
     init_platform();
-
-    /* 2. 關閉 Data Cache（IP 透過 m_axi 直接讀寫 DDR） */
     Xil_DCacheDisable();
 
     xil_printf("\r\n=== DFT HLS IP Test (N=%d) ===\r\n", COEFF_SIZE);
     xil_printf("Data Cache has been disabled.\r\n");
 
-    /* 3. 初始化 IP */
     CfgPtr = XDft_LookupConfig(XPAR_DFT_0_DEVICE_ID);
     if (!CfgPtr) {
         xil_printf("ERROR: XDft_LookupConfig failed.\r\n");
@@ -367,10 +429,9 @@ int main(void)
     }
     xil_printf("XDft initialized.\r\n");
 
-    /* 4. 印出參數資訊 */
     xil_printf("DTYPE     = ap_fixed<%d,%d>  (Q%d.%d)\r\n",
                TOTAL_BITS, INT_BITS, INT_BITS, DEC_BITS);
-    xil_printf("SUM_DTYPE = ap_fixed<%d,%d>  (Q%d.%d), stored as int64\r\n",
+    xil_printf("SUM_DTYPE = ap_fixed<%d,%d>  (Q%d.%d), 39b in 64b slot (sign-ext on read)\r\n",
                SUM_TOTAL_BITS, SUM_INT_BITS, SUM_INT_BITS, SUM_DEC_BITS);
     xil_printf("Buffer addr: real_in=0x%08x imag_in=0x%08x real_out=0x%08x imag_out=0x%08x\r\n",
                (unsigned)(UINTPTR)real_in,
@@ -378,50 +439,38 @@ int main(void)
                (unsigned)(UINTPTR)real_out,
                (unsigned)(UINTPTR)imag_out);
 
-    /* 5. 容忍度
-     *    DTYPE 量化步長 = 2^-14 ≈ 6.1e-5
-     *    最壞情況 N 次累加 ≈ N * 步長 = 256 * 6.1e-5 ≈ 0.0156
-     *    再放寬 2 倍給 cos/sin 表量化，並至少 0.1
-     */
-    tol = (double)COEFF_SIZE * pow(2.0, -(double)DEC_BITS) * 2.0;
-    if (tol < 0.1) tol = 0.1;
+    tol_q27 = ((int64_t)1 << SUM_DEC_BITS) / 2;   /* 0.5 */
     xil_printf("Tolerance = ");
-    print_float(tol);
+    print_q27(tol_q27);
     xil_printf("\r\n\r\n");
 
-    /* ---------- Test 1: 純 cos，bin=4，amp=0.5 ---------- */
-    gen_signal_sine(4, 0.5f);
-    if (run_one_test("Cos bin=4 amp=0.5", tol, 1)) pass++;
+    gen_signal_sine(4, ONE_Q14 / 2);
+    if (run_one_test("Cos bin=4 amp=0.5", tol_q27, 1)) pass++;
     total++;
 
-    /* ---------- Test 2: 高頻 cos，bin=N/4 ---------- */
-    gen_signal_sine(COEFF_SIZE / 4, 0.5f);
-    if (run_one_test("Cos bin=N/4", tol, 0)) pass++;
+    gen_signal_sine(COEFF_SIZE / 4, ONE_Q14 / 2);
+    if (run_one_test("Cos bin=N/4", tol_q27, 0)) pass++;
     total++;
 
-    /* ---------- Test 3: DC=0.5 ---------- */
-    gen_signal_dc(0.5f);
-    if (run_one_test("DC=0.5", tol, 0)) pass++;
+    gen_signal_dc(ONE_Q14 / 2);
+    if (run_one_test("DC=0.5", tol_q27, 0)) pass++;
     total++;
 
-    /* ---------- Test 4: 5 組 random ---------- */
     my_srand(42);
     for (t = 0; t < 5; t++) {
         char name[16];
-        gen_signal_random(0.5f);
+        gen_signal_random(ONE_Q14 / 2);
         name[0]='R'; name[1]='a'; name[2]='n'; name[3]='d';
         name[4]='o'; name[5]='m'; name[6]=' ';
         name[7]='0' + t; name[8]='\0';
-        if (run_one_test(name, tol, 0)) pass++;
+        if (run_one_test(name, tol_q27, 0)) pass++;
         total++;
     }
 
-    /* ---------- Test 5: Impulse ---------- */
-    gen_signal_impulse(0.9f);
-    if (run_one_test("Impulse", tol, 0)) pass++;
+    gen_signal_impulse((int)(0.9f * ONE_Q14 + 0.5f));
+    if (run_one_test("Impulse", tol_q27, 0)) pass++;
     total++;
 
-    /* ---------- 總結 ---------- */
     xil_printf("\r\n=== %d / %d passed ===\r\n", pass, total);
 
     cleanup_platform();
